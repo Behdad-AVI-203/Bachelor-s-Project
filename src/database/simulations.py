@@ -114,6 +114,9 @@ class SimulationRepository:
                         "behavior_snapshot_json": {
                             "behavior": behavior,
                             "device_overrides": overrides,
+                            "source_metadata": (
+                                device.get("metadata_json") or {}
+                            ),
                         },
                     }
                 )
