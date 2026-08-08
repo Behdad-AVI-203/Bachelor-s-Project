@@ -48,3 +48,16 @@ venv\Scripts\streamlit.exe run streamlit_app.py
 
 The application stores data in `data/simulation_platform.sqlite3` by default.
 Set `SIM_PLATFORM_DB_PATH` to use another SQLite database file.
+
+## Automated Tests
+
+Install the development dependencies and run the complete suite:
+
+```powershell
+venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+venv\Scripts\python.exe -m pytest
+```
+
+The suite covers database integration, core business logic, Streamlit user
+flows, error handling, configuration portability, and a 100-device virtual
+clock performance scenario.
