@@ -37,3 +37,14 @@ result = engine.run_experiment(experiment_config_id)
 Both blockchain engines receive the same persisted Poisson event stream.
 Network-specific transactions, blocks, device snapshots, metrics, and the
 final comparison are written through the database layer.
+
+## Streamlit Application
+
+Run the complete research interface from the project root:
+
+```powershell
+venv\Scripts\streamlit.exe run streamlit_app.py
+```
+
+The application stores data in `data/simulation_platform.sqlite3` by default.
+Set `SIM_PLATFORM_DB_PATH` to use another SQLite database file.
