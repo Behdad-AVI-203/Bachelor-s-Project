@@ -16,8 +16,10 @@ from src.core import (
     IncentiveContext,
     IncentiveOutcome,
     IoTEnvironmentRuntime,
+    ParticipationContext,
     PluginExecutionError,
     PluginValidationError,
+    ProfitExpectationBehavior,
     RewardIncentiveMechanism,
     SimulationEvent,
     TransactionStatus,
@@ -222,6 +224,39 @@ def test_unprofitable_device_churns_after_data_confirmation():
     assert transaction.status == TransactionStatus.CONFIRMED
     assert not engine.device_states[1].active
     assert engine.device_states[1].churn_reason
+
+
+def test_profit_expectation_behavior_uses_incentive_signal():
+    behavior = ProfitExpectationBehavior()
+    context = ParticipationContext(
+        device={"profit_expectation": 0.5},
+        device_state={
+            "active": True,
+            "cumulative_reward": 1.0,
+            "cumulative_cost": 2.0,
+            "data_submissions": 1,
+        },
+        action={"action_type": "iot_data"},
+        network_outcome={"status": "confirmed"},
+    )
+
+    churn_decision = behavior.decide_participation(context)
+    retained_decision = behavior.decide_participation(
+        ParticipationContext(
+            device=context.device,
+            device_state=context.device_state,
+            action=context.action,
+            network_outcome=context.network_outcome,
+            incentive_outcome=IncentiveOutcome(
+                participation_signal=2.0
+            ),
+        )
+    )
+
+    assert not churn_decision.active
+    assert churn_decision.utility == pytest.approx(-1.0)
+    assert retained_decision.active
+    assert retained_decision.utility == pytest.approx(1.0)
 
 
 def test_blockchain_rejects_invalid_events_and_backward_time():

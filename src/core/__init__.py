@@ -1,5 +1,11 @@
 """Core simulation domain, independent from the Streamlit user interface."""
 
+from .behavior import (
+    DeviceBehavior,
+    ParticipationContext,
+    ParticipationDecision,
+    ProfitExpectationBehavior,
+)
 from .blockchain import BlockchainConfig, BlockchainEngine
 from .errors import (
     BlockchainError,
@@ -40,6 +46,7 @@ __all__ = [
     "BlockchainEngine",
     "BlockchainError",
     "CoreError",
+    "DeviceBehavior",
     "DeviceGroupConfig",
     "DeviceProfile",
     "EnvironmentError",
@@ -50,9 +57,12 @@ __all__ = [
     "IoTEnvironmentDefinition",
     "IoTEnvironmentRuntime",
     "NetworkDeviceState",
+    "ParticipationContext",
+    "ParticipationDecision",
     "PluginError",
     "PluginExecutionError",
     "PluginValidationError",
+    "ProfitExpectationBehavior",
     "RewardIncentiveMechanism",
     "SimulationEngine",
     "SimulationError",

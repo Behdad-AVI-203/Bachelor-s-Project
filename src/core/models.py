@@ -74,17 +74,6 @@ class NetworkDeviceState:
             return None
         return self.cumulative_profit / self.data_submissions
 
-    def evaluate_participation(self) -> None:
-        """Deactivate an unprofitable device after it has submitted data."""
-        average_profit = self.average_data_profit
-        if average_profit is None or not self.active:
-            return
-        if average_profit < self.profile.profit_expectation:
-            self.active = False
-            self.churn_reason = (
-                "Average data profit fell below the configured expectation."
-            )
-
 
 @dataclass(slots=True)
 class SimulationEvent:

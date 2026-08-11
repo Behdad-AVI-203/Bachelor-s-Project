@@ -10,10 +10,16 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from .behavior import (
+    DeviceBehavior,
+    ParticipationContext,
+    ProfitExpectationBehavior,
+)
 from .errors import BlockchainError
 from .incentives import (
     IncentiveContext,
     IncentiveMechanism,
+    IncentiveOutcome,
     RewardIncentiveMechanism,
 )
 from .iot import IoTEnvironmentRuntime
@@ -90,6 +96,7 @@ class BlockchainEngine:
         config: BlockchainConfig,
         random_seed: int,
         incentive_mechanism: IncentiveMechanism | None = None,
+        device_behavior: DeviceBehavior | None = None,
     ) -> None:
         config.validate()
         self.simulation_network_id = simulation_network_id
@@ -98,6 +105,7 @@ class BlockchainEngine:
         self.incentive_mechanism = (
             incentive_mechanism or RewardIncentiveMechanism()
         )
+        self.device_behavior = device_behavior or ProfitExpectationBehavior()
         self.random_source = random.Random(random_seed)
         self.device_states = {
             device.database_id: NetworkDeviceState(
@@ -505,7 +513,6 @@ class BlockchainEngine:
             if charge_data_cost:
                 sender.data_submissions += 1
                 sender.cumulative_cost += sender.profile.execution_cost
-                sender.evaluate_participation()
 
         transaction = NetworkTransaction(
             transaction_hash=self._transaction_hash(
@@ -525,6 +532,20 @@ class BlockchainEngine:
             rejection_reason=reason,
         )
         self.transactions.append(transaction)
+        if sender is not None and charge_data_cost:
+            self._update_participation(
+                sender,
+                action=self._action_context(transaction),
+                network_outcome={
+                    "status": TransactionStatus.REJECTED.value,
+                    "accepted": False,
+                    "fee": 0,
+                    "confirmed_at_ms": None,
+                    "confirmation_latency_ms": None,
+                    "rejection_reason": reason,
+                    "metadata": {},
+                },
+            )
         return transaction
 
     def _maybe_start_mining(
@@ -628,6 +649,7 @@ class BlockchainEngine:
     ) -> None:
         sender = self._get_state(transaction.sender_device_id)
         target = self._get_state(transaction.target_device_id)
+        incentive_outcome = None
         if sender is None:
             raise BlockchainError(
                 "A pending transaction lost its sender device state."
@@ -669,7 +691,15 @@ class BlockchainEngine:
         transaction.block_height = job.height
         sender.confirmed_transactions += 1
         if transaction.transaction_type == TransactionType.IOT_DATA:
-            sender.evaluate_participation()
+            self._update_participation(
+                sender,
+                action=self._action_context(transaction),
+                network_outcome=self._confirmed_network_outcome(
+                    transaction,
+                    job,
+                ),
+                incentive_outcome=incentive_outcome,
+            )
 
     def _incentive_context(
         self,
@@ -693,30 +723,81 @@ class BlockchainEngine:
                 "cumulative_cost": state.cumulative_cost,
                 "data_submissions": state.data_submissions,
             },
-            action={
-                "action_type": transaction.transaction_type.value,
-                "sender_device_id": transaction.sender_device_id,
-                "target_device_id": transaction.target_device_id,
-                "amount": transaction.amount,
-                "payload": dict(transaction.payload),
-                "submitted_at_ms": transaction.submitted_at_ms,
-            },
-            network_outcome={
-                "status": TransactionStatus.CONFIRMED.value,
-                "accepted": True,
-                "fee": transaction.fee,
-                "confirmed_at_ms": job.completes_at_ms,
-                "confirmation_latency_ms": (
-                    job.completes_at_ms - transaction.submitted_at_ms
-                ),
-                "metadata": {
-                    "block_height": job.height,
-                    "confirmation_reference": job.candidate_hash,
-                },
-            },
+            action=self._action_context(transaction),
+            network_outcome=self._confirmed_network_outcome(
+                transaction,
+                job,
+            ),
             elapsed_ms=job.completes_at_ms,
             legacy_reward_override=transaction.reward_override,
         )
+
+    def _update_participation(
+        self,
+        state: NetworkDeviceState,
+        *,
+        action: Mapping[str, Any],
+        network_outcome: Mapping[str, Any],
+        incentive_outcome: IncentiveOutcome | None = None,
+    ) -> None:
+        decision = self.device_behavior.decide_participation(
+            ParticipationContext(
+                device={
+                    "device_key": state.profile.device_key,
+                    "precision": state.profile.precision,
+                    "execution_cost": state.profile.execution_cost,
+                    "data_rate": state.profile.data_rate,
+                    "profit_expectation": state.profile.profit_expectation,
+                    "parameters": dict(state.profile.parameters),
+                },
+                device_state={
+                    "balance": state.balance,
+                    "active": state.active,
+                    "churn_reason": state.churn_reason,
+                    "feedback_score": state.feedback_score,
+                    "cumulative_reward": state.cumulative_reward,
+                    "cumulative_cost": state.cumulative_cost,
+                    "data_submissions": state.data_submissions,
+                },
+                action=action,
+                network_outcome=network_outcome,
+                incentive_outcome=incentive_outcome,
+            )
+        )
+        state.active = decision.active
+        state.churn_reason = decision.reason if not decision.active else None
+
+    @staticmethod
+    def _action_context(
+        transaction: NetworkTransaction,
+    ) -> dict[str, Any]:
+        return {
+            "action_type": transaction.transaction_type.value,
+            "sender_device_id": transaction.sender_device_id,
+            "target_device_id": transaction.target_device_id,
+            "amount": transaction.amount,
+            "payload": dict(transaction.payload),
+            "submitted_at_ms": transaction.submitted_at_ms,
+        }
+
+    @staticmethod
+    def _confirmed_network_outcome(
+        transaction: NetworkTransaction,
+        job: MiningJob,
+    ) -> dict[str, Any]:
+        return {
+            "status": TransactionStatus.CONFIRMED.value,
+            "accepted": True,
+            "fee": transaction.fee,
+            "confirmed_at_ms": job.completes_at_ms,
+            "confirmation_latency_ms": (
+                job.completes_at_ms - transaction.submitted_at_ms
+            ),
+            "metadata": {
+                "block_height": job.height,
+                "confirmation_reference": job.candidate_hash,
+            },
+        }
 
     def _mining_duration_ms(self) -> float:
         base_duration = self._non_negative_number(
