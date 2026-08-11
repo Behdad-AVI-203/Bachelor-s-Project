@@ -7,6 +7,26 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .incentives import IncentiveOutcome
+from .models import DeviceAction, ExternalOpportunity
+
+
+@dataclass(frozen=True, slots=True)
+class ActionDecisionContext:
+    """State available when deciding whether to act on an opportunity."""
+
+    device: Mapping[str, Any]
+    device_state: Mapping[str, Any]
+    opportunity: ExternalOpportunity
+    last_incentive_outcome: IncentiveOutcome | None = None
+    random_value: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ActionDecision:
+    """A produced action or an explicit non-participation decision."""
+
+    action: DeviceAction | None
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +53,12 @@ class ParticipationDecision:
 class DeviceBehavior(Protocol):
     """Minimal interface for device participation policies."""
 
+    def decide_action(
+        self,
+        context: ActionDecisionContext,
+    ) -> ActionDecision:
+        """Return an action or explicit no-action decision."""
+
     def decide_participation(
         self,
         context: ParticipationContext,
@@ -43,6 +69,21 @@ class DeviceBehavior(Protocol):
 @dataclass(frozen=True, slots=True)
 class ProfitExpectationBehavior:
     """Preserve the existing average-profit participation policy."""
+
+    def decide_action(
+        self,
+        context: ActionDecisionContext,
+    ) -> ActionDecision:
+        """Act on every opportunity while the device remains active."""
+        if not bool(context.device_state.get("active", True)):
+            return ActionDecision(
+                action=None,
+                reason=(
+                    context.device_state.get("churn_reason")
+                    or "Device is not currently participating."
+                ),
+            )
+        return ActionDecision(action=context.opportunity.to_action())
 
     def decide_participation(
         self,

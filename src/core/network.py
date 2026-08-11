@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from .models import SimulationEvent
+from .models import DeviceAction
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +49,7 @@ class NetworkModel(Protocol):
 
     current_time_ms: int
 
-    def process_action(self, action: SimulationEvent) -> NetworkOutcome:
+    def process_action(self, action: DeviceAction) -> NetworkOutcome:
         """Submit one device action to the network model."""
 
     def advance_to(self, elapsed_ms: int) -> None:

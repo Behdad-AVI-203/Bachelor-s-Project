@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import random
 from collections.abc import Mapping
 from typing import Any
 
 from .behavior import (
+    ActionDecisionContext,
     DeviceBehavior,
     ParticipationContext,
     ProfitExpectationBehavior,
@@ -19,8 +21,11 @@ from .incentives import (
     RewardIncentiveMechanism,
 )
 from .models import (
+    DeviceAction,
+    ExternalOpportunity,
     NetworkDeviceState,
     NetworkTransaction,
+    NonParticipationRecord,
     SimulationEvent,
     TransactionStatus,
     TransactionType,
@@ -37,12 +42,20 @@ class SimulationArmRuntime:
         network_model: PoWNetworkModel,
         incentive_mechanism: IncentiveMechanism | None = None,
         device_behavior: DeviceBehavior | None = None,
+        random_seed: int = 0,
     ) -> None:
         self.network_model = network_model
         self.incentive_mechanism = (
             incentive_mechanism or RewardIncentiveMechanism()
         )
         self.device_behavior = device_behavior or ProfitExpectationBehavior()
+        self.random_source = random.Random(random_seed)
+        self.non_participation_records: list[NonParticipationRecord] = []
+        self.last_incentive_outcomes: dict[int, IncentiveOutcome] = {}
+        self.opportunities_seen = 0
+        self.actions_created = 0
+        self._device_opportunities: dict[int, int] = {}
+        self._device_actions: dict[int, int] = {}
 
     @property
     def simulation_network_id(self) -> int:
@@ -68,7 +81,57 @@ class SimulationArmRuntime:
     def blocks(self):
         return self.network_model.blocks
 
-    def process_action(self, action: SimulationEvent) -> NetworkOutcome:
+    def process_opportunity(
+        self,
+        opportunity: ExternalOpportunity,
+    ) -> NetworkOutcome | None:
+        """Let device behavior decide whether an opportunity becomes action."""
+        self.advance_to(opportunity.scheduled_at_ms)
+        state = self._get_state(opportunity.sender_device_id)
+        device_id = opportunity.sender_device_id
+        self.opportunities_seen += 1
+        self._increment_device_count(self._device_opportunities, device_id)
+
+        decision = self.device_behavior.decide_action(
+            ActionDecisionContext(
+                device=(
+                    self._device_context(state)
+                    if state is not None
+                    else {}
+                ),
+                device_state=(
+                    self._device_state_context(state)
+                    if state is not None
+                    else {}
+                ),
+                opportunity=opportunity,
+                last_incentive_outcome=(
+                    self.last_incentive_outcomes.get(device_id)
+                    if device_id is not None
+                    else None
+                ),
+                random_value=self.random_source.random(),
+            )
+        )
+        if decision.action is None:
+            self.non_participation_records.append(
+                NonParticipationRecord(
+                    opportunity_sequence=opportunity.sequence_number,
+                    scheduled_at_ms=opportunity.scheduled_at_ms,
+                    device_id=device_id,
+                    reason=decision.reason or "Device chose not to act.",
+                )
+            )
+            return None
+
+        action = decision.action
+        if action.database_id is None:
+            action.database_id = opportunity.database_id
+        self.actions_created += 1
+        self._increment_device_count(self._device_actions, device_id)
+        return self.process_action(action)
+
+    def process_action(self, action: DeviceAction) -> NetworkOutcome:
         """Run one action through network, incentive, and behavior stages."""
         self.advance_to(action.scheduled_at_ms)
         outcome = self.network_model.process_action(action)
@@ -110,13 +173,35 @@ class SimulationArmRuntime:
         self,
         elapsed_ms: int,
     ) -> list[dict[str, Any]]:
-        return self.network_model.device_state_records(elapsed_ms)
+        records = self.network_model.device_state_records(elapsed_ms)
+        for record in records:
+            device_id = int(record["simulation_device_id"])
+            extra_state = dict(record.get("extra_state_json") or {})
+            opportunities = self._device_opportunities.get(device_id, 0)
+            actions = self._device_actions.get(device_id, 0)
+            extra_state.update(
+                {
+                    "opportunities_seen": opportunities,
+                    "actions_created": actions,
+                    "non_participation_count": opportunities - actions,
+                }
+            )
+            record["extra_state_json"] = extra_state
+        return records
 
     def metric_record(self, elapsed_ms: int) -> dict[str, Any]:
-        return self.network_model.metric_record(elapsed_ms)
+        record = self.network_model.metric_record(elapsed_ms)
+        custom_metrics = dict(record.get("custom_metrics_json") or {})
+        custom_metrics.update(self._participation_statistics())
+        record["custom_metrics_json"] = custom_metrics
+        return record
 
     def summary_record(self) -> dict[str, Any]:
-        return self.network_model.summary_record()
+        record = self.network_model.summary_record()
+        custom_summary = dict(record.get("custom_summary_json") or {})
+        custom_summary.update(self._participation_statistics())
+        record["custom_summary_json"] = custom_summary
+        return record
 
     def block_records(self) -> list[dict[str, Any]]:
         return self.network_model.block_records()
@@ -177,6 +262,9 @@ class SimulationArmRuntime:
                 transaction.reward = incentive_outcome.reward
                 state.balance += incentive_outcome.reward
                 state.cumulative_reward += incentive_outcome.reward
+                self.last_incentive_outcomes[
+                    state.profile.database_id
+                ] = incentive_outcome
 
             if (
                 outcome.status == TransactionStatus.CONFIRMED.value
@@ -248,6 +336,27 @@ class SimulationArmRuntime:
         if device_id is None:
             return None
         return self.device_states.get(device_id)
+
+    @staticmethod
+    def _increment_device_count(
+        counts: dict[int, int],
+        device_id: int | None,
+    ) -> None:
+        if device_id is not None:
+            counts[device_id] = counts.get(device_id, 0) + 1
+
+    def _participation_statistics(self) -> dict[str, Any]:
+        no_action_count = len(self.non_participation_records)
+        return {
+            "opportunities_seen": self.opportunities_seen,
+            "actions_created": self.actions_created,
+            "non_participation_count": no_action_count,
+            "opportunity_participation_rate": (
+                self.actions_created / self.opportunities_seen
+                if self.opportunities_seen
+                else 0
+            ),
+        }
 
     @staticmethod
     def _device_context(state: NetworkDeviceState) -> dict[str, Any]:

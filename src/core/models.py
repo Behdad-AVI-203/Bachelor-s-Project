@@ -76,8 +76,8 @@ class NetworkDeviceState:
 
 
 @dataclass(slots=True)
-class SimulationEvent:
-    """One canonical event delivered to both blockchain networks."""
+class ExternalOpportunity:
+    """One shared opportunity that a device may choose to act upon."""
 
     sequence_number: int
     scheduled_at_ms: int
@@ -89,7 +89,7 @@ class SimulationEvent:
     database_id: int | None = None
 
     def to_database_record(self, simulation_id: int) -> dict[str, Any]:
-        """Convert the event into a database-layer record."""
+        """Persist the opportunity using the existing event table."""
         return {
             "simulation_id": simulation_id,
             "sequence_number": self.sequence_number,
@@ -102,7 +102,7 @@ class SimulationEvent:
         }
 
     def to_plugin_context(self) -> dict[str, Any]:
-        """Return a JSON-compatible representation for custom logic."""
+        """Return a JSON-compatible opportunity representation."""
         return {
             "sequence_number": self.sequence_number,
             "scheduled_at_ms": self.scheduled_at_ms,
@@ -112,6 +112,84 @@ class SimulationEvent:
             "amount": self.amount,
             "payload": dict(self.payload),
         }
+
+    def to_action(self) -> DeviceAction:
+        """Create the default action corresponding to this opportunity."""
+        return DeviceAction(
+            sequence_number=self.sequence_number,
+            scheduled_at_ms=self.scheduled_at_ms,
+            event_type=self.event_type,
+            sender_device_id=self.sender_device_id,
+            target_device_id=self.target_device_id,
+            amount=self.amount,
+            payload=dict(self.payload),
+            database_id=self.database_id,
+        )
+
+    def copy(self) -> ExternalOpportunity:
+        """Return an arm-local copy with an independent payload."""
+        return ExternalOpportunity(
+            sequence_number=self.sequence_number,
+            scheduled_at_ms=self.scheduled_at_ms,
+            event_type=self.event_type,
+            sender_device_id=self.sender_device_id,
+            target_device_id=self.target_device_id,
+            amount=self.amount,
+            payload=dict(self.payload),
+            database_id=self.database_id,
+        )
+
+
+@dataclass(slots=True)
+class DeviceAction:
+    """An action a device actually chose to submit to a network model."""
+
+    sequence_number: int
+    scheduled_at_ms: int
+    event_type: TransactionType
+    sender_device_id: int | None
+    target_device_id: int | None
+    amount: float = 0
+    payload: dict[str, Any] = field(default_factory=dict)
+    database_id: int | None = None
+
+    def to_database_record(self, simulation_id: int) -> dict[str, Any]:
+        """Compatibility helper for callers that persist actions."""
+        return {
+            "simulation_id": simulation_id,
+            "sequence_number": self.sequence_number,
+            "scheduled_at_ms": self.scheduled_at_ms,
+            "event_type": self.event_type.value,
+            "sender_device_id": self.sender_device_id,
+            "target_device_id": self.target_device_id,
+            "amount": self.amount,
+            "payload_json": self.payload,
+        }
+
+    def to_plugin_context(self) -> dict[str, Any]:
+        """Return a JSON-compatible action representation."""
+        return {
+            "sequence_number": self.sequence_number,
+            "scheduled_at_ms": self.scheduled_at_ms,
+            "event_type": self.event_type.value,
+            "sender_device_id": self.sender_device_id,
+            "target_device_id": self.target_device_id,
+            "amount": self.amount,
+            "payload": dict(self.payload),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NonParticipationRecord:
+    """Record that an opportunity did not produce a device action."""
+
+    opportunity_sequence: int
+    scheduled_at_ms: int
+    device_id: int | None
+    reason: str
+
+
+SimulationEvent = DeviceAction
 
 
 @dataclass(slots=True)

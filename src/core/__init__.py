@@ -1,6 +1,8 @@
 """Core simulation domain, independent from the Streamlit user interface."""
 
 from .behavior import (
+    ActionDecision,
+    ActionDecisionContext,
     DeviceBehavior,
     ParticipationContext,
     ParticipationDecision,
@@ -33,8 +35,11 @@ from .iot import (
     IoTEnvironmentRuntime,
 )
 from .models import (
+    DeviceAction,
     DeviceProfile,
+    ExternalOpportunity,
     NetworkDeviceState,
+    NonParticipationRecord,
     SimulationEvent,
     TransactionStatus,
     TransactionType,
@@ -52,10 +57,14 @@ __all__ = [
     "BlockchainEngine",
     "BlockchainError",
     "CoreError",
+    "ActionDecision",
+    "ActionDecisionContext",
+    "DeviceAction",
     "DeviceBehavior",
     "DeviceGroupConfig",
     "DeviceProfile",
     "EnvironmentError",
+    "ExternalOpportunity",
     "IncentiveContext",
     "IncentiveError",
     "IncentiveMechanism",
@@ -65,6 +74,7 @@ __all__ = [
     "NetworkDeviceState",
     "NetworkModel",
     "NetworkOutcome",
+    "NonParticipationRecord",
     "ParticipationContext",
     "ParticipationDecision",
     "PluginError",

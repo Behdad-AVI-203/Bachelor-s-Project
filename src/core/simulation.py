@@ -13,7 +13,7 @@ from .errors import CoreError, SimulationError
 from .incentives import RewardIncentiveMechanism
 from .iot import IoTEnvironmentRuntime
 from .metrics import compare_metric, score_comparison
-from .models import SimulationEvent
+from .models import ExternalOpportunity
 from .orchestration import SimulationArmRuntime
 from .plugins import load_plugin_function
 from .traffic import PoissonEventGenerator, PoissonTrafficConfig
@@ -46,7 +46,7 @@ ProgressCallback = Callable[[SimulationProgress], None]
 
 
 class SimulationEngine:
-    """Generate shared events, run A/B engines, and persist all results."""
+    """Generate shared opportunities, run A/B arms, and persist results."""
 
     def __init__(
         self,
@@ -144,19 +144,19 @@ class SimulationEngine:
                 device_rows
             )
             traffic_config = self._traffic_config(run)
-            events = PoissonEventGenerator(
+            opportunities = PoissonEventGenerator(
                 environment,
                 traffic_config,
                 random_seed=run["random_seed"],
             ).generate()
             self.database.simulations.insert_events(
                 (
-                    event.to_database_record(simulation_id)
-                    for event in events
+                    opportunity.to_database_record(simulation_id)
+                    for opportunity in opportunities
                 ),
                 chunk_size=self.persistence_batch_size,
             )
-            self._attach_event_ids(simulation_id, events)
+            self._attach_opportunity_ids(simulation_id, opportunities)
 
             engines = {
                 row["network_slot"]: self._build_pow_network_model(
@@ -166,10 +166,10 @@ class SimulationEngine:
                 )
                 for row in network_rows
             }
-            summaries = self._execute_events(
+            summaries = self._execute_opportunities(
                 simulation_id=simulation_id,
                 run=run,
-                events=events,
+                opportunities=opportunities,
                 engines=engines,
                 progress_callback=progress_callback,
             )
@@ -196,13 +196,13 @@ class SimulationEngine:
                 simulation_id,
                 phase="completed",
                 progress=1,
-                events_processed=len(events),
-                total_events=len(events),
+                events_processed=len(opportunities),
+                total_events=len(opportunities),
                 virtual_time_ms=final_virtual_time,
             )
             return SimulationExecutionResult(
                 simulation_id=simulation_id,
-                event_count=len(events),
+                event_count=len(opportunities),
                 final_virtual_time_ms=final_virtual_time,
                 network_summaries=summaries,
                 comparison=comparison,
@@ -215,12 +215,12 @@ class SimulationEngine:
                 f"Simulation {simulation_id} failed: {exc}."
             ) from exc
 
-    def _execute_events(
+    def _execute_opportunities(
         self,
         *,
         simulation_id: int,
         run: Mapping[str, Any],
-        events: Sequence[SimulationEvent],
+        opportunities: Sequence[ExternalOpportunity],
         engines: Mapping[str, SimulationArmRuntime],
         progress_callback: ProgressCallback | None,
     ) -> dict[str, dict[str, Any]]:
@@ -230,9 +230,9 @@ class SimulationEngine:
         state_buffer: list[dict[str, Any]] = []
         metric_buffer: list[dict[str, Any]] = []
 
-        for index, event in enumerate(events, start=1):
+        for index, opportunity in enumerate(opportunities, start=1):
             while (
-                next_sample_ms <= event.scheduled_at_ms
+                next_sample_ms <= opportunity.scheduled_at_ms
                 and next_sample_ms <= duration_ms
             ):
                 self._collect_samples(
@@ -249,17 +249,20 @@ class SimulationEngine:
                 next_sample_ms += sample_interval_ms
 
             for engine in engines.values():
-                engine.process_action(event)
+                engine.process_opportunity(opportunity.copy())
 
-            if index == len(events) or index % max(1, len(events) // 100) == 0:
+            if (
+                index == len(opportunities)
+                or index % max(1, len(opportunities) // 100) == 0
+            ):
                 self._emit_progress(
                     progress_callback,
                     simulation_id,
                     phase="running",
-                    progress=index / max(1, len(events)),
+                    progress=index / max(1, len(opportunities)),
                     events_processed=index,
-                    total_events=len(events),
-                    virtual_time_ms=event.scheduled_at_ms,
+                    total_events=len(opportunities),
+                    virtual_time_ms=opportunity.scheduled_at_ms,
                 )
 
         while next_sample_ms <= duration_ms:
@@ -520,6 +523,7 @@ class SimulationEngine:
                 random_seed=random_seed,
             ),
             incentive_mechanism=RewardIncentiveMechanism(reward_function),
+            random_seed=random_seed,
         )
 
     @staticmethod
@@ -567,26 +571,30 @@ class SimulationEngine:
             max_events=int(parameters.get("max_events", 1_000_000)),
         )
 
-    def _attach_event_ids(
+    def _attach_opportunity_ids(
         self,
         simulation_id: int,
-        events: Sequence[SimulationEvent],
+        opportunities: Sequence[ExternalOpportunity],
     ) -> None:
-        stored_events = self.database.list_records(
+        stored_opportunities = self.database.list_records(
             "simulation_events",
             filters={"simulation_id": simulation_id},
             order_by="sequence_number",
         )
-        if len(stored_events) != len(events):
+        if len(stored_opportunities) != len(opportunities):
             raise SimulationError(
                 "Persisted event count does not match generated event count."
             )
-        for event, record in zip(events, stored_events, strict=True):
-            if event.sequence_number != record["sequence_number"]:
+        for opportunity, record in zip(
+            opportunities,
+            stored_opportunities,
+            strict=True,
+        ):
+            if opportunity.sequence_number != record["sequence_number"]:
                 raise SimulationError(
                     "Persisted event ordering does not match generation order."
                 )
-            event.database_id = record["id"]
+            opportunity.database_id = record["id"]
 
     def _mark_failed(
         self,

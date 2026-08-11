@@ -7,12 +7,14 @@ import random
 import pytest
 
 from src.core import (
+    ActionDecisionContext,
     BlockchainConfig,
     BlockchainEngine,
     BlockchainError,
     DeviceGroupConfig,
     DeviceProfile,
     EnvironmentError,
+    ExternalOpportunity,
     IncentiveContext,
     IncentiveOutcome,
     IoTEnvironmentRuntime,
@@ -154,6 +156,10 @@ def test_poisson_event_generation_is_reproducible():
     assert first == second
     assert first
     assert all(
+        isinstance(opportunity, ExternalOpportunity)
+        for opportunity in first
+    )
+    assert all(
         first[index].scheduled_at_ms <= first[index + 1].scheduled_at_ms
         for index in range(len(first) - 1)
     )
@@ -268,6 +274,98 @@ def test_profit_expectation_behavior_uses_incentive_signal():
     assert churn_decision.utility == pytest.approx(-1.0)
     assert retained_decision.active
     assert retained_decision.utility == pytest.approx(1.0)
+
+
+def test_default_behavior_turns_active_opportunity_into_action():
+    behavior = ProfitExpectationBehavior()
+    opportunity = ExternalOpportunity(
+        sequence_number=0,
+        scheduled_at_ms=100,
+        event_type=TransactionType.IOT_DATA,
+        sender_device_id=1,
+        target_device_id=None,
+        payload={"value": 20.0},
+        database_id=7,
+    )
+
+    active_decision = behavior.decide_action(
+        ActionDecisionContext(
+            device={"device_key": "device-1"},
+            device_state={"active": True},
+            opportunity=opportunity,
+        )
+    )
+    inactive_decision = behavior.decide_action(
+        ActionDecisionContext(
+            device={"device_key": "device-1"},
+            device_state={
+                "active": False,
+                "churn_reason": "Participation ended.",
+            },
+            opportunity=opportunity,
+        )
+    )
+
+    assert active_decision.action is not None
+    assert active_decision.action.database_id == opportunity.database_id
+    assert inactive_decision.action is None
+    assert inactive_decision.reason == "Participation ended."
+
+
+def test_opportunity_copies_isolate_arm_local_payload_changes():
+    opportunity = ExternalOpportunity(
+        sequence_number=0,
+        scheduled_at_ms=100,
+        event_type=TransactionType.IOT_DATA,
+        sender_device_id=1,
+        target_device_id=None,
+        payload={"value": 20.0},
+    )
+
+    arm_a_opportunity = opportunity.copy()
+    arm_b_opportunity = opportunity.copy()
+    arm_a_opportunity.payload["value"] = 99.0
+
+    assert arm_b_opportunity.payload["value"] == 20.0
+    assert opportunity.payload["value"] == 20.0
+
+
+def test_shared_opportunity_can_produce_action_or_no_action_per_arm():
+    opportunity = ExternalOpportunity(
+        sequence_number=0,
+        scheduled_at_ms=100,
+        event_type=TransactionType.IOT_DATA,
+        sender_device_id=1,
+        target_device_id=None,
+        payload={"value": 20.0},
+        database_id=9,
+    )
+    active_arm = _simulation_arm()
+    inactive_arm = _simulation_arm(
+        config=_blockchain_config(network_slot="B")
+    )
+    inactive_arm.device_states[1].active = False
+    inactive_arm.device_states[1].churn_reason = "Participation ended."
+
+    active_outcome = active_arm.process_opportunity(opportunity)
+    inactive_outcome = inactive_arm.process_opportunity(opportunity)
+
+    assert active_outcome is not None
+    assert inactive_outcome is None
+    assert len(active_arm.transactions) == 1
+    assert inactive_arm.transactions == []
+    assert inactive_arm.non_participation_records[0].opportunity_sequence == 0
+    assert active_arm.metric_record(100)["custom_metrics_json"] == {
+        "pending_mining": True,
+        "virtual_time_ms": 100,
+        "opportunities_seen": 1,
+        "actions_created": 1,
+        "non_participation_count": 0,
+        "opportunity_participation_rate": 1.0,
+    }
+    assert inactive_arm.summary_record()["custom_summary_json"][
+        "non_participation_count"
+    ] == 1
 
 
 def test_blockchain_rejects_invalid_events_and_backward_time():

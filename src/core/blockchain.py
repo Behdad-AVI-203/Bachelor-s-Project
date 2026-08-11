@@ -15,10 +15,10 @@ from .iot import IoTEnvironmentRuntime
 from .metrics import average, balance_variance, gini_coefficient
 from .models import (
     Block,
+    DeviceAction,
     MiningJob,
     NetworkDeviceState,
     NetworkTransaction,
-    SimulationEvent,
     TransactionStatus,
     TransactionType,
 )
@@ -126,12 +126,12 @@ class PoWNetworkModel(NetworkModel):
         self.current_time_ms = elapsed_ms
         self._maybe_start_mining(elapsed_ms)
 
-    def process_action(self, action: SimulationEvent) -> NetworkOutcome:
+    def process_action(self, action: DeviceAction) -> NetworkOutcome:
         """Process one action and return its immediate network outcome."""
         transaction = self.process_event(action)
         return self._transaction_network_outcome(transaction)
 
-    def process_event(self, event: SimulationEvent) -> NetworkTransaction:
+    def process_event(self, event: DeviceAction) -> NetworkTransaction:
         """Compatibility API returning the concrete PoW transaction."""
         self.advance_to(event.scheduled_at_ms)
         sender = self._get_state(event.sender_device_id)
@@ -442,7 +442,7 @@ class PoWNetworkModel(NetworkModel):
 
     def _run_transaction_logic(
         self,
-        event: SimulationEvent,
+        event: DeviceAction,
     ) -> dict[str, Any]:
         if self.config.transaction_logic is None:
             return {}
@@ -476,7 +476,7 @@ class PoWNetworkModel(NetworkModel):
 
     def _validate_event(
         self,
-        event: SimulationEvent,
+        event: DeviceAction,
         sender: NetworkDeviceState,
         target: NetworkDeviceState | None,
         amount: float,
@@ -511,7 +511,7 @@ class PoWNetworkModel(NetworkModel):
 
     def _reject_event(
         self,
-        event: SimulationEvent,
+        event: DeviceAction,
         reason: str,
         *,
         charge_data_cost: bool = False,
@@ -740,7 +740,7 @@ class PoWNetworkModel(NetworkModel):
 
     def _transaction_hash(
         self,
-        event: SimulationEvent,
+        event: DeviceAction,
         amount: float,
         fee: float,
         payload: Mapping[str, Any],

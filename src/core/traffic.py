@@ -1,4 +1,4 @@
-"""Poisson event-stream generation for shared A/B simulation input."""
+"""Poisson opportunity-stream generation for shared A/B simulation input."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from .errors import SimulationError
 from .iot import IoTEnvironmentRuntime
-from .models import DeviceProfile, SimulationEvent, TransactionType
+from .models import DeviceProfile, ExternalOpportunity, TransactionType
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +45,7 @@ class PoissonTrafficConfig:
 
 
 class PoissonEventGenerator:
-    """Generate one reproducible event stream for both network engines."""
+    """Generate one reproducible opportunity stream for both A/B arms."""
 
     DEFAULT_MIX = {
         TransactionType.TRANSFER.value: 0.2,
@@ -68,9 +68,9 @@ class PoissonEventGenerator:
             config.traffic_mix
         )
 
-    def generate(self) -> list[SimulationEvent]:
-        """Generate all events without sleeping or using wall-clock time."""
-        events: list[SimulationEvent] = []
+    def generate(self) -> list[ExternalOpportunity]:
+        """Generate opportunities without sleeping or using wall-clock time."""
+        opportunities: list[ExternalOpportunity] = []
         current_time_seconds = 0.0
 
         while True:
@@ -79,7 +79,7 @@ class PoissonEventGenerator:
             )
             if current_time_seconds > self.config.duration_seconds:
                 break
-            if len(events) >= self.config.max_events:
+            if len(opportunities) >= self.config.max_events:
                 raise SimulationError(
                     "Generated event count exceeded the configured safety "
                     "limit."
@@ -91,22 +91,22 @@ class PoissonEventGenerator:
                 weights=self.event_weights,
                 k=1,
             )[0]
-            events.append(
-                self._create_event(
-                    len(events),
+            opportunities.append(
+                self._create_opportunity(
+                    len(opportunities),
                     scheduled_at_ms,
                     event_type,
                 )
             )
 
-        return events
+        return opportunities
 
-    def _create_event(
+    def _create_opportunity(
         self,
         sequence_number: int,
         scheduled_at_ms: int,
         event_type: TransactionType,
-    ) -> SimulationEvent:
+    ) -> ExternalOpportunity:
         devices = list(self.environment.devices)
         if len(devices) < 2 and event_type in {
             TransactionType.TRANSFER,
@@ -121,7 +121,7 @@ class PoissonEventGenerator:
                 scheduled_at_ms,
                 self.random_source,
             )
-            return SimulationEvent(
+            return ExternalOpportunity(
                 sequence_number=sequence_number,
                 scheduled_at_ms=scheduled_at_ms,
                 event_type=event_type,
@@ -139,7 +139,7 @@ class PoissonEventGenerator:
                 ),
                 8,
             )
-            return SimulationEvent(
+            return ExternalOpportunity(
                 sequence_number=sequence_number,
                 scheduled_at_ms=scheduled_at_ms,
                 event_type=event_type,
@@ -154,7 +154,7 @@ class PoissonEventGenerator:
             < self.config.positive_feedback_probability
             else -1
         )
-        return SimulationEvent(
+        return ExternalOpportunity(
             sequence_number=sequence_number,
             scheduled_at_ms=scheduled_at_ms,
             event_type=event_type,
