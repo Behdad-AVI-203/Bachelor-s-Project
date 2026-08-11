@@ -16,9 +16,12 @@ from src.core import (
     IncentiveContext,
     IncentiveOutcome,
     IoTEnvironmentRuntime,
+    NetworkModel,
+    NetworkOutcome,
     ParticipationContext,
     PluginExecutionError,
     PluginValidationError,
+    PoWNetworkModel,
     ProfitExpectationBehavior,
     RewardIncentiveMechanism,
     SimulationEvent,
@@ -284,6 +287,31 @@ def test_blockchain_rejects_invalid_events_and_backward_time():
     assert "insufficient" in rejected.rejection_reason.lower()
     with pytest.raises(BlockchainError):
         engine.advance_to(99)
+
+
+def test_pow_model_implements_network_model_contract():
+    model = PoWNetworkModel(
+        simulation_network_id=1,
+        environment=_runtime(),
+        config=_blockchain_config(),
+        random_seed=7,
+    )
+    outcome = model.process_action(
+        SimulationEvent(
+            sequence_number=0,
+            scheduled_at_ms=100,
+            event_type=TransactionType.TRANSFER,
+            sender_device_id=1,
+            target_device_id=2,
+            amount=100.0,
+        )
+    )
+
+    assert isinstance(model, NetworkModel)
+    assert isinstance(outcome, NetworkOutcome)
+    assert not outcome.accepted
+    assert outcome.status == TransactionStatus.REJECTED.value
+    assert BlockchainEngine is PoWNetworkModel
 
 
 def test_reward_incentive_mechanism_uses_generic_context():

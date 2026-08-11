@@ -33,6 +33,7 @@ from .models import (
     TransactionStatus,
     TransactionType,
 )
+from .network import NetworkModel, NetworkOutcome
 
 TransactionLogicFunction = Callable[[Mapping[str, Any]], Any]
 
@@ -85,8 +86,8 @@ class BlockchainConfig:
         }
 
 
-class BlockchainEngine:
-    """Process one network independently using a virtual mining clock."""
+class PoWNetworkModel(NetworkModel):
+    """Built-in proof-of-work implementation of the network-model contract."""
 
     def __init__(
         self,
@@ -140,8 +141,13 @@ class BlockchainEngine:
         self.current_time_ms = elapsed_ms
         self._maybe_start_mining(elapsed_ms)
 
+    def process_action(self, action: SimulationEvent) -> NetworkOutcome:
+        """Process one action and return its immediate network outcome."""
+        transaction = self.process_event(action)
+        return self._transaction_network_outcome(transaction)
+
     def process_event(self, event: SimulationEvent) -> NetworkTransaction:
-        """Validate a shared event and add its network transaction outcome."""
+        """Compatibility API returning the concrete PoW transaction."""
         self.advance_to(event.scheduled_at_ms)
         sender = self._get_state(event.sender_device_id)
         target = self._get_state(event.target_device_id)
@@ -236,7 +242,7 @@ class BlockchainEngine:
         return transaction
 
     def flush(self, start_at_ms: int) -> int:
-        """Mine every remaining transaction and return final virtual time."""
+        """Compatibility API for finalizing pending PoW transactions."""
         self.advance_to(max(start_at_ms, self.current_time_ms))
 
         while self.mining_job is not None or self.pending_transactions:
@@ -250,6 +256,10 @@ class BlockchainEngine:
             self.advance_to(self.mining_job.completes_at_ms)
 
         return self.current_time_ms
+
+    def finalize(self, elapsed_ms: int) -> int:
+        """Finish pending PoW work and return the final virtual time."""
+        return self.flush(elapsed_ms)
 
     def device_state_records(self, elapsed_ms: int) -> list[dict[str, Any]]:
         """Build database records for every device at one virtual timestamp."""
@@ -536,15 +546,9 @@ class BlockchainEngine:
             self._update_participation(
                 sender,
                 action=self._action_context(transaction),
-                network_outcome={
-                    "status": TransactionStatus.REJECTED.value,
-                    "accepted": False,
-                    "fee": 0,
-                    "confirmed_at_ms": None,
-                    "confirmation_latency_ms": None,
-                    "rejection_reason": reason,
-                    "metadata": {},
-                },
+                network_outcome=self._transaction_network_outcome(
+                    transaction
+                ).to_context(),
             )
         return transaction
 
@@ -697,7 +701,7 @@ class BlockchainEngine:
                 network_outcome=self._confirmed_network_outcome(
                     transaction,
                     job,
-                ),
+                ).to_context(),
                 incentive_outcome=incentive_outcome,
             )
 
@@ -727,7 +731,7 @@ class BlockchainEngine:
             network_outcome=self._confirmed_network_outcome(
                 transaction,
                 job,
-            ),
+            ).to_context(),
             elapsed_ms=job.completes_at_ms,
             legacy_reward_override=transaction.reward_override,
         )
@@ -784,20 +788,44 @@ class BlockchainEngine:
     def _confirmed_network_outcome(
         transaction: NetworkTransaction,
         job: MiningJob,
-    ) -> dict[str, Any]:
-        return {
-            "status": TransactionStatus.CONFIRMED.value,
-            "accepted": True,
-            "fee": transaction.fee,
-            "confirmed_at_ms": job.completes_at_ms,
-            "confirmation_latency_ms": (
-                job.completes_at_ms - transaction.submitted_at_ms
-            ),
-            "metadata": {
-                "block_height": job.height,
+    ) -> NetworkOutcome:
+        return NetworkOutcome(
+            action_id=transaction.event_id,
+            status=TransactionStatus.CONFIRMED.value,
+            accepted=True,
+            submitted_at_ms=transaction.submitted_at_ms,
+            finalized_at_ms=job.completes_at_ms,
+            fee=transaction.fee,
+            evidence={
                 "confirmation_reference": job.candidate_hash,
             },
-        }
+            metadata={
+                "block_height": job.height,
+                "transaction_hash": transaction.transaction_hash,
+            },
+        )
+
+    @staticmethod
+    def _transaction_network_outcome(
+        transaction: NetworkTransaction,
+    ) -> NetworkOutcome:
+        return NetworkOutcome(
+            action_id=transaction.event_id,
+            status=transaction.status.value,
+            accepted=transaction.status not in {
+                TransactionStatus.REJECTED,
+                TransactionStatus.FAILED,
+            },
+            submitted_at_ms=transaction.submitted_at_ms,
+            finalized_at_ms=transaction.confirmed_at_ms,
+            fee=transaction.fee,
+            rejection_reason=transaction.rejection_reason,
+            metadata={
+                "transaction_hash": transaction.transaction_hash,
+                "transaction_type": transaction.transaction_type.value,
+                "block_height": transaction.block_height,
+            },
+        )
 
     def _mining_duration_ms(self) -> float:
         base_duration = self._non_negative_number(
@@ -851,3 +879,6 @@ class BlockchainEngine:
                 f"{label.title()} must be finite and non-negative."
             )
         return number
+
+
+BlockchainEngine = PoWNetworkModel

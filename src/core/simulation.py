@@ -8,7 +8,7 @@ from typing import Any
 
 from src.database import DatabaseService
 
-from .blockchain import BlockchainConfig, BlockchainEngine
+from .blockchain import BlockchainConfig, PoWNetworkModel
 from .errors import CoreError, SimulationError
 from .incentives import RewardIncentiveMechanism
 from .iot import IoTEnvironmentRuntime
@@ -158,7 +158,7 @@ class SimulationEngine:
             self._attach_event_ids(simulation_id, events)
 
             engines = {
-                row["network_slot"]: self._build_blockchain_engine(
+                row["network_slot"]: self._build_pow_network_model(
                     row,
                     environment,
                     random_seed=run["random_seed"],
@@ -220,7 +220,7 @@ class SimulationEngine:
         simulation_id: int,
         run: Mapping[str, Any],
         events: Sequence[SimulationEvent],
-        engines: Mapping[str, BlockchainEngine],
+        engines: Mapping[str, PoWNetworkModel],
         progress_callback: ProgressCallback | None,
     ) -> dict[str, dict[str, Any]]:
         duration_ms = round(float(run["duration_seconds"]) * 1_000)
@@ -248,7 +248,7 @@ class SimulationEngine:
                 next_sample_ms += sample_interval_ms
 
             for engine in engines.values():
-                engine.process_event(event)
+                engine.process_action(event)
 
             if index == len(events) or index % max(1, len(events) // 100) == 0:
                 self._emit_progress(
@@ -276,7 +276,7 @@ class SimulationEngine:
             next_sample_ms += sample_interval_ms
 
         for engine in engines.values():
-            final_time = engine.flush(duration_ms)
+            final_time = engine.finalize(duration_ms)
             state_buffer.extend(engine.device_state_records(final_time))
             metric_buffer.append(engine.metric_record(final_time))
 
@@ -292,7 +292,7 @@ class SimulationEngine:
 
     def _collect_samples(
         self,
-        engines: Mapping[str, BlockchainEngine],
+        engines: Mapping[str, PoWNetworkModel],
         elapsed_ms: int,
         state_buffer: list[dict[str, Any]],
         metric_buffer: list[dict[str, Any]],
@@ -326,7 +326,7 @@ class SimulationEngine:
 
     def _persist_network_results(
         self,
-        engines: Mapping[str, BlockchainEngine],
+        engines: Mapping[str, PoWNetworkModel],
     ) -> None:
         for engine in engines.values():
             block_records = engine.block_records()
@@ -471,13 +471,13 @@ class SimulationEngine:
         self.database.simulations.save_comparison(comparison, metrics)
         return comparison
 
-    def _build_blockchain_engine(
+    def _build_pow_network_model(
         self,
         network_row: Mapping[str, Any],
         environment: IoTEnvironmentRuntime,
         *,
         random_seed: int,
-    ) -> BlockchainEngine:
+    ) -> PoWNetworkModel:
         bundle = network_row["configuration_snapshot_json"]
         network = bundle.get("network")
         if not isinstance(network, Mapping):
@@ -511,7 +511,7 @@ class SimulationEngine:
             parameters=dict(network.get("parameters_json") or {}),
             transaction_logic=transaction_logic,
         )
-        return BlockchainEngine(
+        return PoWNetworkModel(
             simulation_network_id=int(network_row["id"]),
             environment=environment,
             config=config,

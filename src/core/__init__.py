@@ -6,7 +6,11 @@ from .behavior import (
     ParticipationDecision,
     ProfitExpectationBehavior,
 )
-from .blockchain import BlockchainConfig, BlockchainEngine
+from .blockchain import (
+    BlockchainConfig,
+    BlockchainEngine,
+    PoWNetworkModel,
+)
 from .errors import (
     BlockchainError,
     CoreError,
@@ -35,6 +39,7 @@ from .models import (
     TransactionStatus,
     TransactionType,
 )
+from .network import NetworkModel, NetworkOutcome
 from .simulation import (
     SimulationEngine,
     SimulationExecutionResult,
@@ -57,11 +62,14 @@ __all__ = [
     "IoTEnvironmentDefinition",
     "IoTEnvironmentRuntime",
     "NetworkDeviceState",
+    "NetworkModel",
+    "NetworkOutcome",
     "ParticipationContext",
     "ParticipationDecision",
     "PluginError",
     "PluginExecutionError",
     "PluginValidationError",
+    "PoWNetworkModel",
     "ProfitExpectationBehavior",
     "RewardIncentiveMechanism",
     "SimulationEngine",
