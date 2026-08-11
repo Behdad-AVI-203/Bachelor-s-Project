@@ -13,6 +13,10 @@ class BlockchainError(CoreError):
     """Raised when a blockchain engine cannot process its state."""
 
 
+class IncentiveError(CoreError):
+    """Raised when an incentive mechanism cannot evaluate an outcome."""
+
+
 class SimulationError(CoreError):
     """Raised when simulation orchestration fails."""
 

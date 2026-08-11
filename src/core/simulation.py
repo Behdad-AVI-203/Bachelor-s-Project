@@ -10,6 +10,7 @@ from src.database import DatabaseService
 
 from .blockchain import BlockchainConfig, BlockchainEngine
 from .errors import CoreError, SimulationError
+from .incentives import RewardIncentiveMechanism
 from .iot import IoTEnvironmentRuntime
 from .metrics import compare_metric, score_comparison
 from .models import SimulationEvent
@@ -508,7 +509,6 @@ class SimulationEngine:
             target_block_time_ms=network.get("target_block_time_ms"),
             transaction_fee_rate=float(network["transaction_fee_rate"]),
             parameters=dict(network.get("parameters_json") or {}),
-            reward_function=reward_function,
             transaction_logic=transaction_logic,
         )
         return BlockchainEngine(
@@ -516,6 +516,7 @@ class SimulationEngine:
             environment=environment,
             config=config,
             random_seed=random_seed,
+            incentive_mechanism=RewardIncentiveMechanism(reward_function),
         )
 
     @staticmethod

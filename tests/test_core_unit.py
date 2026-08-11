@@ -13,9 +13,12 @@ from src.core import (
     DeviceGroupConfig,
     DeviceProfile,
     EnvironmentError,
+    IncentiveContext,
+    IncentiveOutcome,
     IoTEnvironmentRuntime,
     PluginExecutionError,
     PluginValidationError,
+    RewardIncentiveMechanism,
     SimulationEvent,
     TransactionStatus,
     TransactionType,
@@ -57,7 +60,6 @@ def _blockchain_config(**overrides) -> BlockchainConfig:
         "target_block_time_ms": None,
         "transaction_fee_rate": 0.1,
         "parameters": {"base_mining_time_ms": 1},
-        "reward_function": lambda context: 3.5,
     }
     values.update(overrides)
     return BlockchainConfig(**values)
@@ -142,6 +144,9 @@ def test_blockchain_processes_transfer_feedback_and_iot_reward():
         environment=runtime,
         config=_blockchain_config(),
         random_seed=7,
+        incentive_mechanism=RewardIncentiveMechanism(
+            lambda context: 3.5
+        ),
     )
     events = [
         SimulationEvent(
@@ -196,11 +201,11 @@ def test_unprofitable_device_churns_after_data_confirmation():
     engine = BlockchainEngine(
         simulation_network_id=1,
         environment=runtime,
-        config=_blockchain_config(
-            transaction_fee_rate=0.0,
-            reward_function=lambda context: 0.0,
-        ),
+        config=_blockchain_config(transaction_fee_rate=0.0),
         random_seed=7,
+        incentive_mechanism=RewardIncentiveMechanism(
+            lambda context: 0.0
+        ),
     )
     transaction = engine.process_event(
         SimulationEvent(
@@ -225,6 +230,9 @@ def test_blockchain_rejects_invalid_events_and_backward_time():
         environment=_runtime(),
         config=_blockchain_config(),
         random_seed=7,
+        incentive_mechanism=RewardIncentiveMechanism(
+            lambda context: 3.5
+        ),
     )
     rejected = engine.process_event(
         SimulationEvent(
@@ -241,6 +249,38 @@ def test_blockchain_rejects_invalid_events_and_backward_time():
     assert "insufficient" in rejected.rejection_reason.lower()
     with pytest.raises(BlockchainError):
         engine.advance_to(99)
+
+
+def test_reward_incentive_mechanism_uses_generic_context():
+    captured_context = {}
+
+    def reward_function(context):
+        captured_context.update(context)
+        return 2.25
+
+    mechanism = RewardIncentiveMechanism(reward_function)
+    outcome = mechanism.evaluate(
+        IncentiveContext(
+            network={"name": "Generic", "parameters": {}},
+            device={"device_key": "device-1", "precision": 0.9},
+            device_state={"feedback_score": 1},
+            action={
+                "action_type": "iot_data",
+                "payload": {"value": 21.5},
+                "submitted_at_ms": 100,
+            },
+            network_outcome={
+                "status": "confirmed",
+                "confirmed_at_ms": 150,
+                "metadata": {},
+            },
+            elapsed_ms=150,
+        )
+    )
+
+    assert outcome == IncentiveOutcome(reward=2.25)
+    assert captured_context["action"]["action_type"] == "iot_data"
+    assert captured_context["network_outcome"]["status"] == "confirmed"
 
 
 def test_plugin_validation_and_execution_errors():

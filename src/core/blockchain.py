@@ -10,7 +10,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .errors import BlockchainError, PluginExecutionError
+from .errors import BlockchainError
+from .incentives import (
+    IncentiveContext,
+    IncentiveMechanism,
+    RewardIncentiveMechanism,
+)
 from .iot import IoTEnvironmentRuntime
 from .metrics import average, balance_variance, gini_coefficient
 from .models import (
@@ -23,7 +28,6 @@ from .models import (
     TransactionType,
 )
 
-RewardFunction = Callable[[Mapping[str, Any]], Any]
 TransactionLogicFunction = Callable[[Mapping[str, Any]], Any]
 
 
@@ -38,7 +42,6 @@ class BlockchainConfig:
     target_block_time_ms: int | None
     transaction_fee_rate: float
     parameters: dict[str, Any] = field(default_factory=dict)
-    reward_function: RewardFunction | None = None
     transaction_logic: TransactionLogicFunction | None = None
 
     def validate(self) -> None:
@@ -86,11 +89,15 @@ class BlockchainEngine:
         environment: IoTEnvironmentRuntime,
         config: BlockchainConfig,
         random_seed: int,
+        incentive_mechanism: IncentiveMechanism | None = None,
     ) -> None:
         config.validate()
         self.simulation_network_id = simulation_network_id
         self.environment = environment
         self.config = config
+        self.incentive_mechanism = (
+            incentive_mechanism or RewardIncentiveMechanism()
+        )
         self.random_source = random.Random(random_seed)
         self.device_states = {
             device.database_id: NetworkDeviceState(
@@ -162,11 +169,6 @@ class BlockchainEngine:
             "transaction fee",
         )
         reward_override = decision.get("reward")
-        if reward_override is not None:
-            reward_override = self._non_negative_number(
-                reward_override,
-                "reward override",
-            )
 
         payload = dict(event.payload)
         payload_updates = decision.get("payload")
@@ -655,10 +657,12 @@ class BlockchainEngine:
             )
 
         elif transaction.transaction_type == TransactionType.IOT_DATA:
-            reward = self._calculate_reward(transaction, sender, job)
-            transaction.reward = reward
-            sender.balance += reward
-            sender.cumulative_reward += reward
+            incentive_outcome = self.incentive_mechanism.evaluate(
+                self._incentive_context(transaction, sender, job)
+            )
+            transaction.reward = incentive_outcome.reward
+            sender.balance += incentive_outcome.reward
+            sender.cumulative_reward += incentive_outcome.reward
 
         transaction.status = TransactionStatus.CONFIRMED
         transaction.confirmed_at_ms = job.completes_at_ms
@@ -667,61 +671,52 @@ class BlockchainEngine:
         if transaction.transaction_type == TransactionType.IOT_DATA:
             sender.evaluate_participation()
 
-    def _calculate_reward(
+    def _incentive_context(
         self,
         transaction: NetworkTransaction,
         state: NetworkDeviceState,
         job: MiningJob,
-    ) -> float:
-        if transaction.reward_override is not None:
-            return transaction.reward_override
-
-        context = {
-            "network": self.config.plugin_context(),
-            "block_height": job.height,
-            "elapsed_ms": job.completes_at_ms,
-            "device": {
+    ) -> IncentiveContext:
+        return IncentiveContext(
+            network=self.config.plugin_context(),
+            device={
                 "device_key": state.profile.device_key,
                 "precision": state.profile.precision,
                 "execution_cost": state.profile.execution_cost,
                 "data_rate": state.profile.data_rate,
                 "profit_expectation": state.profile.profit_expectation,
             },
-            "device_state": {
+            device_state={
                 "balance": state.balance,
                 "feedback_score": state.feedback_score,
                 "cumulative_reward": state.cumulative_reward,
                 "cumulative_cost": state.cumulative_cost,
                 "data_submissions": state.data_submissions,
             },
-            "transaction": {
+            action={
+                "action_type": transaction.transaction_type.value,
+                "sender_device_id": transaction.sender_device_id,
+                "target_device_id": transaction.target_device_id,
+                "amount": transaction.amount,
                 "payload": dict(transaction.payload),
                 "submitted_at_ms": transaction.submitted_at_ms,
             },
-        }
-
-        if self.config.reward_function is None:
-            base_reward = float(
-                self.config.parameters.get("base_iot_reward", 1.0)
-            )
-            feedback_weight = float(
-                self.config.parameters.get("feedback_weight", 0.1)
-            )
-            reward = (
-                base_reward * state.profile.precision
-                + feedback_weight * state.feedback_score
-            )
-        else:
-            try:
-                reward = self.config.reward_function(context)
-            except PluginExecutionError:
-                raise
-            except Exception as exc:
-                raise BlockchainError(
-                    f"Reward function failed: {exc}."
-                ) from exc
-
-        return self._non_negative_number(reward, "calculated reward")
+            network_outcome={
+                "status": TransactionStatus.CONFIRMED.value,
+                "accepted": True,
+                "fee": transaction.fee,
+                "confirmed_at_ms": job.completes_at_ms,
+                "confirmation_latency_ms": (
+                    job.completes_at_ms - transaction.submitted_at_ms
+                ),
+                "metadata": {
+                    "block_height": job.height,
+                    "confirmation_reference": job.candidate_hash,
+                },
+            },
+            elapsed_ms=job.completes_at_ms,
+            legacy_reward_override=transaction.reward_override,
+        )
 
     def _mining_duration_ms(self) -> float:
         base_duration = self._non_negative_number(
