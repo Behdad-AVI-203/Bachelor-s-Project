@@ -14,6 +14,7 @@ from .incentives import RewardIncentiveMechanism
 from .iot import IoTEnvironmentRuntime
 from .metrics import compare_metric, score_comparison
 from .models import SimulationEvent
+from .orchestration import SimulationArmRuntime
 from .plugins import load_plugin_function
 from .traffic import PoissonEventGenerator, PoissonTrafficConfig
 
@@ -220,7 +221,7 @@ class SimulationEngine:
         simulation_id: int,
         run: Mapping[str, Any],
         events: Sequence[SimulationEvent],
-        engines: Mapping[str, PoWNetworkModel],
+        engines: Mapping[str, SimulationArmRuntime],
         progress_callback: ProgressCallback | None,
     ) -> dict[str, dict[str, Any]]:
         duration_ms = round(float(run["duration_seconds"]) * 1_000)
@@ -292,7 +293,7 @@ class SimulationEngine:
 
     def _collect_samples(
         self,
-        engines: Mapping[str, PoWNetworkModel],
+        engines: Mapping[str, SimulationArmRuntime],
         elapsed_ms: int,
         state_buffer: list[dict[str, Any]],
         metric_buffer: list[dict[str, Any]],
@@ -326,7 +327,7 @@ class SimulationEngine:
 
     def _persist_network_results(
         self,
-        engines: Mapping[str, PoWNetworkModel],
+        engines: Mapping[str, SimulationArmRuntime],
     ) -> None:
         for engine in engines.values():
             block_records = engine.block_records()
@@ -477,7 +478,7 @@ class SimulationEngine:
         environment: IoTEnvironmentRuntime,
         *,
         random_seed: int,
-    ) -> PoWNetworkModel:
+    ) -> SimulationArmRuntime:
         bundle = network_row["configuration_snapshot_json"]
         network = bundle.get("network")
         if not isinstance(network, Mapping):
@@ -511,11 +512,13 @@ class SimulationEngine:
             parameters=dict(network.get("parameters_json") or {}),
             transaction_logic=transaction_logic,
         )
-        return PoWNetworkModel(
-            simulation_network_id=int(network_row["id"]),
-            environment=environment,
-            config=config,
-            random_seed=random_seed,
+        return SimulationArmRuntime(
+            network_model=PoWNetworkModel(
+                simulation_network_id=int(network_row["id"]),
+                environment=environment,
+                config=config,
+                random_seed=random_seed,
+            ),
             incentive_mechanism=RewardIncentiveMechanism(reward_function),
         )
 

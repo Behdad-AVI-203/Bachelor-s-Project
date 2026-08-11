@@ -57,3 +57,6 @@ class NetworkModel(Protocol):
 
     def finalize(self, elapsed_ms: int) -> int:
         """Finish pending network work and return final virtual time."""
+
+    def drain_outcomes(self) -> list[NetworkOutcome]:
+        """Return and clear terminal outcomes produced since the last drain."""

@@ -24,6 +24,7 @@ from src.core import (
     PoWNetworkModel,
     ProfitExpectationBehavior,
     RewardIncentiveMechanism,
+    SimulationArmRuntime,
     SimulationEvent,
     TransactionStatus,
     TransactionType,
@@ -68,6 +69,25 @@ def _blockchain_config(**overrides) -> BlockchainConfig:
     }
     values.update(overrides)
     return BlockchainConfig(**values)
+
+
+def _simulation_arm(
+    *,
+    runtime: IoTEnvironmentRuntime | None = None,
+    config: BlockchainConfig | None = None,
+    reward_function=None,
+) -> SimulationArmRuntime:
+    return SimulationArmRuntime(
+        network_model=PoWNetworkModel(
+            simulation_network_id=1,
+            environment=runtime or _runtime(),
+            config=config or _blockchain_config(),
+            random_seed=7,
+        ),
+        incentive_mechanism=RewardIncentiveMechanism(
+            reward_function or (lambda context: 3.5)
+        ),
+    )
 
 
 def test_device_group_validation_and_runtime_limits():
@@ -144,15 +164,7 @@ def test_poisson_event_generation_is_reproducible():
 
 def test_blockchain_processes_transfer_feedback_and_iot_reward():
     runtime = _runtime()
-    engine = BlockchainEngine(
-        simulation_network_id=1,
-        environment=runtime,
-        config=_blockchain_config(),
-        random_seed=7,
-        incentive_mechanism=RewardIncentiveMechanism(
-            lambda context: 3.5
-        ),
-    )
+    engine = _simulation_arm(runtime=runtime)
     events = [
         SimulationEvent(
             sequence_number=0,
@@ -203,14 +215,10 @@ def test_unprofitable_device_churns_after_data_confirmation():
         execution_cost=2.0,
         profit_expectation=0.5,
     )
-    engine = BlockchainEngine(
-        simulation_network_id=1,
-        environment=runtime,
+    engine = _simulation_arm(
+        runtime=runtime,
         config=_blockchain_config(transaction_fee_rate=0.0),
-        random_seed=7,
-        incentive_mechanism=RewardIncentiveMechanism(
-            lambda context: 0.0
-        ),
+        reward_function=lambda context: 0.0,
     )
     transaction = engine.process_event(
         SimulationEvent(
@@ -263,15 +271,7 @@ def test_profit_expectation_behavior_uses_incentive_signal():
 
 
 def test_blockchain_rejects_invalid_events_and_backward_time():
-    engine = BlockchainEngine(
-        simulation_network_id=1,
-        environment=_runtime(),
-        config=_blockchain_config(),
-        random_seed=7,
-        incentive_mechanism=RewardIncentiveMechanism(
-            lambda context: 3.5
-        ),
-    )
+    engine = _simulation_arm()
     rejected = engine.process_event(
         SimulationEvent(
             sequence_number=0,
@@ -312,6 +312,34 @@ def test_pow_model_implements_network_model_contract():
     assert not outcome.accepted
     assert outcome.status == TransactionStatus.REJECTED.value
     assert BlockchainEngine is PoWNetworkModel
+    assert not hasattr(model, "incentive_mechanism")
+    assert not hasattr(model, "device_behavior")
+
+
+def test_pow_model_emits_outcomes_without_applying_external_policies():
+    model = PoWNetworkModel(
+        simulation_network_id=1,
+        environment=_runtime(),
+        config=_blockchain_config(),
+        random_seed=7,
+    )
+    transaction = model.process_event(
+        SimulationEvent(
+            sequence_number=0,
+            scheduled_at_ms=100,
+            event_type=TransactionType.IOT_DATA,
+            sender_device_id=1,
+            target_device_id=None,
+            payload={"value": 20.0},
+        )
+    )
+    model.finalize(100)
+    outcomes = model.drain_outcomes()
+
+    assert transaction.status == TransactionStatus.CONFIRMED
+    assert transaction.reward == 0
+    assert model.device_states[1].cumulative_reward == 0
+    assert [outcome.status for outcome in outcomes] == ["confirmed"]
 
 
 def test_reward_incentive_mechanism_uses_generic_context():

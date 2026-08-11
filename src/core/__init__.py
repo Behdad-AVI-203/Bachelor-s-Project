@@ -40,6 +40,7 @@ from .models import (
     TransactionType,
 )
 from .network import NetworkModel, NetworkOutcome
+from .orchestration import SimulationArmRuntime
 from .simulation import (
     SimulationEngine,
     SimulationExecutionResult,
@@ -73,6 +74,7 @@ __all__ = [
     "ProfitExpectationBehavior",
     "RewardIncentiveMechanism",
     "SimulationEngine",
+    "SimulationArmRuntime",
     "SimulationError",
     "SimulationEvent",
     "SimulationExecutionResult",

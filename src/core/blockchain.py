@@ -10,18 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .behavior import (
-    DeviceBehavior,
-    ParticipationContext,
-    ProfitExpectationBehavior,
-)
 from .errors import BlockchainError
-from .incentives import (
-    IncentiveContext,
-    IncentiveMechanism,
-    IncentiveOutcome,
-    RewardIncentiveMechanism,
-)
 from .iot import IoTEnvironmentRuntime
 from .metrics import average, balance_variance, gini_coefficient
 from .models import (
@@ -96,17 +85,11 @@ class PoWNetworkModel(NetworkModel):
         environment: IoTEnvironmentRuntime,
         config: BlockchainConfig,
         random_seed: int,
-        incentive_mechanism: IncentiveMechanism | None = None,
-        device_behavior: DeviceBehavior | None = None,
     ) -> None:
         config.validate()
         self.simulation_network_id = simulation_network_id
         self.environment = environment
         self.config = config
-        self.incentive_mechanism = (
-            incentive_mechanism or RewardIncentiveMechanism()
-        )
-        self.device_behavior = device_behavior or ProfitExpectationBehavior()
         self.random_source = random.Random(random_seed)
         self.device_states = {
             device.database_id: NetworkDeviceState(
@@ -117,7 +100,9 @@ class PoWNetworkModel(NetworkModel):
         }
         self.pending_transactions: list[NetworkTransaction] = []
         self.transactions: list[NetworkTransaction] = []
+        self.transactions_by_hash: dict[str, NetworkTransaction] = {}
         self.blocks: list[Block] = []
+        self._terminal_outcomes: list[NetworkOutcome] = []
         self.mining_job: MiningJob | None = None
         self.current_time_ms = 0
         self.last_block_mined_at_ms = 0
@@ -208,11 +193,7 @@ class PoWNetworkModel(NetworkModel):
                 charge_data_cost=event.event_type == TransactionType.IOT_DATA,
             )
 
-        sender.submitted_transactions += 1
-        if event.event_type == TransactionType.IOT_DATA:
-            sender.data_submissions += 1
-            sender.cumulative_cost += sender.profile.execution_cost
-        elif event.event_type in {
+        if event.event_type in {
             TransactionType.TRANSFER,
             TransactionType.FEEDBACK,
         }:
@@ -237,6 +218,7 @@ class PoWNetworkModel(NetworkModel):
             reward_override=reward_override,
         )
         self.transactions.append(transaction)
+        self.transactions_by_hash[transaction.transaction_hash] = transaction
         self.pending_transactions.append(transaction)
         self._maybe_start_mining(event.scheduled_at_ms)
         return transaction
@@ -260,6 +242,24 @@ class PoWNetworkModel(NetworkModel):
     def finalize(self, elapsed_ms: int) -> int:
         """Finish pending PoW work and return the final virtual time."""
         return self.flush(elapsed_ms)
+
+    def drain_outcomes(self) -> list[NetworkOutcome]:
+        """Return and clear terminal network outcomes."""
+        outcomes = self._terminal_outcomes
+        self._terminal_outcomes = []
+        return outcomes
+
+    def get_transaction(
+        self,
+        transaction_hash: str,
+    ) -> NetworkTransaction:
+        """Return one concrete PoW transaction by its network reference."""
+        try:
+            return self.transactions_by_hash[transaction_hash]
+        except KeyError as exc:
+            raise BlockchainError(
+                f"Unknown PoW transaction: {transaction_hash}."
+            ) from exc
 
     def device_state_records(self, elapsed_ms: int) -> list[dict[str, Any]]:
         """Build database records for every device at one virtual timestamp."""
@@ -516,14 +516,6 @@ class PoWNetworkModel(NetworkModel):
         *,
         charge_data_cost: bool = False,
     ) -> NetworkTransaction:
-        sender = self._get_state(event.sender_device_id)
-        if sender is not None:
-            sender.submitted_transactions += 1
-            sender.rejected_transactions += 1
-            if charge_data_cost:
-                sender.data_submissions += 1
-                sender.cumulative_cost += sender.profile.execution_cost
-
         transaction = NetworkTransaction(
             transaction_hash=self._transaction_hash(
                 event,
@@ -542,14 +534,13 @@ class PoWNetworkModel(NetworkModel):
             rejection_reason=reason,
         )
         self.transactions.append(transaction)
-        if sender is not None and charge_data_cost:
-            self._update_participation(
-                sender,
-                action=self._action_context(transaction),
-                network_outcome=self._transaction_network_outcome(
-                    transaction
-                ).to_context(),
+        self.transactions_by_hash[transaction.transaction_hash] = transaction
+        self._terminal_outcomes.append(
+            self._transaction_network_outcome(
+                transaction,
+                data_cost_charged=charge_data_cost,
             )
+        )
         return transaction
 
     def _maybe_start_mining(
@@ -653,7 +644,6 @@ class PoWNetworkModel(NetworkModel):
     ) -> None:
         sender = self._get_state(transaction.sender_device_id)
         target = self._get_state(transaction.target_device_id)
-        incentive_outcome = None
         if sender is None:
             raise BlockchainError(
                 "A pending transaction lost its sender device state."
@@ -682,107 +672,12 @@ class PoWNetworkModel(NetworkModel):
                 transaction.payload.get("feedback", 0)
             )
 
-        elif transaction.transaction_type == TransactionType.IOT_DATA:
-            incentive_outcome = self.incentive_mechanism.evaluate(
-                self._incentive_context(transaction, sender, job)
-            )
-            transaction.reward = incentive_outcome.reward
-            sender.balance += incentive_outcome.reward
-            sender.cumulative_reward += incentive_outcome.reward
-
         transaction.status = TransactionStatus.CONFIRMED
         transaction.confirmed_at_ms = job.completes_at_ms
         transaction.block_height = job.height
-        sender.confirmed_transactions += 1
-        if transaction.transaction_type == TransactionType.IOT_DATA:
-            self._update_participation(
-                sender,
-                action=self._action_context(transaction),
-                network_outcome=self._confirmed_network_outcome(
-                    transaction,
-                    job,
-                ).to_context(),
-                incentive_outcome=incentive_outcome,
-            )
-
-    def _incentive_context(
-        self,
-        transaction: NetworkTransaction,
-        state: NetworkDeviceState,
-        job: MiningJob,
-    ) -> IncentiveContext:
-        return IncentiveContext(
-            network=self.config.plugin_context(),
-            device={
-                "device_key": state.profile.device_key,
-                "precision": state.profile.precision,
-                "execution_cost": state.profile.execution_cost,
-                "data_rate": state.profile.data_rate,
-                "profit_expectation": state.profile.profit_expectation,
-            },
-            device_state={
-                "balance": state.balance,
-                "feedback_score": state.feedback_score,
-                "cumulative_reward": state.cumulative_reward,
-                "cumulative_cost": state.cumulative_cost,
-                "data_submissions": state.data_submissions,
-            },
-            action=self._action_context(transaction),
-            network_outcome=self._confirmed_network_outcome(
-                transaction,
-                job,
-            ).to_context(),
-            elapsed_ms=job.completes_at_ms,
-            legacy_reward_override=transaction.reward_override,
+        self._terminal_outcomes.append(
+            self._confirmed_network_outcome(transaction, job)
         )
-
-    def _update_participation(
-        self,
-        state: NetworkDeviceState,
-        *,
-        action: Mapping[str, Any],
-        network_outcome: Mapping[str, Any],
-        incentive_outcome: IncentiveOutcome | None = None,
-    ) -> None:
-        decision = self.device_behavior.decide_participation(
-            ParticipationContext(
-                device={
-                    "device_key": state.profile.device_key,
-                    "precision": state.profile.precision,
-                    "execution_cost": state.profile.execution_cost,
-                    "data_rate": state.profile.data_rate,
-                    "profit_expectation": state.profile.profit_expectation,
-                    "parameters": dict(state.profile.parameters),
-                },
-                device_state={
-                    "balance": state.balance,
-                    "active": state.active,
-                    "churn_reason": state.churn_reason,
-                    "feedback_score": state.feedback_score,
-                    "cumulative_reward": state.cumulative_reward,
-                    "cumulative_cost": state.cumulative_cost,
-                    "data_submissions": state.data_submissions,
-                },
-                action=action,
-                network_outcome=network_outcome,
-                incentive_outcome=incentive_outcome,
-            )
-        )
-        state.active = decision.active
-        state.churn_reason = decision.reason if not decision.active else None
-
-    @staticmethod
-    def _action_context(
-        transaction: NetworkTransaction,
-    ) -> dict[str, Any]:
-        return {
-            "action_type": transaction.transaction_type.value,
-            "sender_device_id": transaction.sender_device_id,
-            "target_device_id": transaction.target_device_id,
-            "amount": transaction.amount,
-            "payload": dict(transaction.payload),
-            "submitted_at_ms": transaction.submitted_at_ms,
-        }
 
     @staticmethod
     def _confirmed_network_outcome(
@@ -802,12 +697,18 @@ class PoWNetworkModel(NetworkModel):
             metadata={
                 "block_height": job.height,
                 "transaction_hash": transaction.transaction_hash,
+                "transaction_type": transaction.transaction_type.value,
+                "data_cost_charged": (
+                    transaction.transaction_type == TransactionType.IOT_DATA
+                ),
             },
         )
 
     @staticmethod
     def _transaction_network_outcome(
         transaction: NetworkTransaction,
+        *,
+        data_cost_charged: bool = False,
     ) -> NetworkOutcome:
         return NetworkOutcome(
             action_id=transaction.event_id,
@@ -824,6 +725,7 @@ class PoWNetworkModel(NetworkModel):
                 "transaction_hash": transaction.transaction_hash,
                 "transaction_type": transaction.transaction_type.value,
                 "block_height": transaction.block_height,
+                "data_cost_charged": data_cost_charged,
             },
         )
 
