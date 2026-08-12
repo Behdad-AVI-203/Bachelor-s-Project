@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -31,6 +32,7 @@ class SQLiteDatabase:
             "device_behaviors",
             "environment_devices",
             "blockchain_network_configs",
+            "incentive_mechanism_configs",
             "experiment_configs",
             "configuration_bundles",
             "simulation_runs",
@@ -98,7 +100,7 @@ class SQLiteDatabase:
         self.close()
 
     def initialize(self) -> None:
-        """Create all tables and indexes if they do not already exist."""
+        """Create the base schema and apply pending versioned migrations."""
         schema_path = Path(__file__).with_name("schema.sql")
 
         try:
@@ -106,6 +108,7 @@ class SQLiteDatabase:
             with self.connection() as connection:
                 connection.executescript(schema_sql)
                 connection.commit()
+                self._apply_migrations(connection)
         except OSError as exc:
             raise DatabaseError(
                 f"Unable to read database schema at {schema_path}."
@@ -114,6 +117,63 @@ class SQLiteDatabase:
             raise DatabaseError("Unable to initialize the database.") from exc
 
         self._column_cache.clear()
+
+    def _apply_migrations(self, connection: sqlite3.Connection) -> None:
+        """Apply each unapplied SQL migration exactly once."""
+        migrations_path = Path(__file__).with_name("migrations")
+        if not migrations_path.exists():
+            return
+
+        applied_versions = {
+            int(row["version"])
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations"
+            ).fetchall()
+        }
+        migrations: list[tuple[int, str, Path]] = []
+        for migration_path in migrations_path.glob("*.sql"):
+            match = re.fullmatch(r"(\d+)_([^.]+)\.sql", migration_path.name)
+            if match is None:
+                continue
+            migrations.append(
+                (
+                    int(match.group(1)),
+                    match.group(2).replace("_", " "),
+                    migration_path,
+                )
+            )
+
+        connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            for version, description, migration_path in sorted(migrations):
+                if version in applied_versions:
+                    continue
+                migration_sql = migration_path.read_text(encoding="utf-8")
+                try:
+                    connection.executescript(
+                        f"BEGIN IMMEDIATE;\n{migration_sql}\n"
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO schema_migrations (version, description)
+                        VALUES (?, ?)
+                        """,
+                        (version, description),
+                    )
+                    violations = connection.execute(
+                        "PRAGMA foreign_key_check"
+                    ).fetchall()
+                    if violations:
+                        raise sqlite3.IntegrityError(
+                            "A schema migration introduced foreign-key "
+                            "violations."
+                        )
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
