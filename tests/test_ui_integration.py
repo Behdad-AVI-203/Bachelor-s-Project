@@ -218,18 +218,25 @@ def test_complete_ui_research_workflow(tmp_path):
     plotly_charts = results_page.get("plotly_chart")
     assert len(plotly_charts) == 1
     assert len(results_page.dataframe) >= 2
-    summary = results_page.dataframe[0].value
-    assert summary["Network"].str.startswith(("A:", "B:")).all()
+    context = results_page.dataframe[0].value
+    assert context.loc[0, "Experiment"] == "UI incentive experiment"
+    assert context.loc[0, "Shared Network Model"] == "Default PoW network"
+    assert context.loc[0, "Incentive A"] == "UI incentive A"
+    assert context.loc[0, "Incentive B"] == "UI incentive B"
+    effectiveness = results_page.dataframe[1].value
+    assert {"Metric", "Incentive A", "Incentive B"}.issubset(
+        effectiveness.columns
+    )
     assert set(button.label for button in results_page.download_button) == {
         "Download CSV",
         "Download PDF",
     }
 
-    csv_bytes = dataframe_to_csv(summary)
+    csv_bytes = dataframe_to_csv(effectiveness)
     pdf_bytes = results_pdf(
         title="UI end-to-end simulation",
         simulation_id=simulation_id,
-        rows=summary.fillna("—").to_dict("records"),
+        rows=effectiveness.fillna("—").to_dict("records"),
     )
     assert csv_bytes.startswith(b"\xef\xbb\xbf")
     assert pdf_bytes.startswith(b"%PDF-1.4")

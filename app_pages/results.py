@@ -1,59 +1,92 @@
-"""Detailed side-by-side simulation results and exports."""
+"""Detailed incentive-comparison results and exports."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.ui.components import (
-    empty_state,
-    format_datetime,
-    page_header,
-)
+from src.ui.components import empty_state, format_datetime, page_header
 from src.ui.exports import dataframe_to_csv, results_pdf
-from src.ui.services import get_database
+from src.ui.services import get_database, get_simulation_results_view
 
 
 COLORS = {"A": "#2563EB", "B": "#0F766E"}
 
 
-def _metric_frame(
-    results: dict[str, Any],
-) -> pd.DataFrame:
-    comparison = results.get("comparison") or {}
-    rows = []
-    for network in results["networks"]:
-        slot = network["network_slot"]
-        rows.append(
-            {
-                "Network": f"{slot}: {network['network_name']}",
-                "Churn rate": network.get("final_churn_rate"),
-                "Average balance": _final_average_balance(
-                    results["latest_device_states"].get(slot, [])
-                ),
-                "Gini coefficient": network.get(
-                    "final_gini_coefficient"
-                ),
-                "Balance variance": network.get(
-                    "final_balance_variance"
-                ),
-                "Total transactions": network.get("total_transactions"),
-                "Confirmed transactions": network.get(
-                    "confirmed_transactions"
-                ),
-                "Total blocks": network.get("total_blocks"),
-                "Throughput (tx/s)": network.get(
-                    "average_throughput_tps"
-                ),
-                "Comparison score": comparison.get(
-                    "score_a" if slot == "A" else "score_b"
-                ),
-            }
-        )
-    return pd.DataFrame(rows)
+def _arms(results: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return comparison arms without exposing database table terminology."""
+    return list(results.get("arms") or results.get("networks") or [])
+
+
+def _summary(results: dict[str, Any]) -> dict[str, Any]:
+    """Return the comparison-aware UI summary."""
+    return dict(results.get("experiment_summary") or {})
+
+
+def _arm_names(summary: dict[str, Any]) -> dict[str, str]:
+    labels = summary.get("labels") or {}
+    return {
+        "A": str(
+            summary.get("arm_a_name")
+            or labels.get("arm_a")
+            or "Arm A"
+        ),
+        "B": str(
+            summary.get("arm_b_name")
+            or labels.get("arm_b")
+            or "Arm B"
+        ),
+    }
+
+
+def _arm_roles(summary: dict[str, Any]) -> dict[str, str]:
+    labels = summary.get("labels") or {}
+    legacy = bool(summary.get("is_legacy"))
+    defaults = (
+        {"A": "Network A", "B": "Network B"}
+        if legacy
+        else {"A": "Incentive A", "B": "Incentive B"}
+    )
+    return {
+        "A": str(labels.get("arm_a_role") or defaults["A"]),
+        "B": str(labels.get("arm_b_role") or defaults["B"]),
+    }
+
+
+def _display_arm_label(
+    summary: dict[str, Any],
+    slot: str,
+    name: str | None = None,
+) -> str:
+    names = _arm_names(summary)
+    roles = _arm_roles(summary)
+    return f"{roles.get(slot, f'Arm {slot}')}: {name or names.get(slot)}"
+
+
+def _custom_summary(arm: dict[str, Any]) -> dict[str, Any]:
+    value = arm.get("custom_summary_json")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _metric_value(
+    arm: dict[str, Any],
+    key: str,
+    *,
+    fallback: Any = None,
+) -> Any:
+    value = arm.get(key)
+    if value is not None:
+        return value
+    return _custom_summary(arm).get(key, fallback)
 
 
 def _final_average_balance(states: list[dict[str, Any]]) -> float | None:
@@ -67,12 +100,13 @@ def _final_average_balance(states: list[dict[str, Any]]) -> float | None:
 
 def _average_balance_series(
     database: Any,
-    networks: list[dict[str, Any]],
+    arms: list[dict[str, Any]],
+    summary: dict[str, Any],
 ) -> pd.DataFrame:
     rows = []
-    for network in networks:
-        slot = network["network_slot"]
-        states = database.simulations.get_device_states(network["id"])
+    for arm in arms:
+        slot = arm["network_slot"]
+        states = database.simulations.get_device_states(arm["id"])
         frame = pd.DataFrame(states)
         if frame.empty:
             continue
@@ -82,8 +116,10 @@ def _average_balance_series(
                 {
                     "Elapsed seconds": record["elapsed_ms"] / 1_000,
                     "Average balance": record["balance"],
-                    "Network": (
-                        f"{slot}: {network['network_name']}"
+                    "Arm": _display_arm_label(
+                        summary,
+                        slot,
+                        arm.get("network_name"),
                     ),
                     "Slot": slot,
                 }
@@ -93,21 +129,26 @@ def _average_balance_series(
 
 def _network_series(
     results: dict[str, Any],
+    summary: dict[str, Any],
     value_key: str,
     value_label: str,
 ) -> pd.DataFrame:
     names = {
-        network["network_slot"]: network["network_name"]
-        for network in results["networks"]
+        arm["network_slot"]: arm.get("network_name")
+        for arm in _arms(results)
     }
     rows = []
-    for slot, samples in results["network_metrics"].items():
+    for slot, samples in results.get("network_metrics", {}).items():
         for sample in samples:
             rows.append(
                 {
                     "Elapsed seconds": sample["elapsed_ms"] / 1_000,
                     value_label: sample.get(value_key),
-                    "Network": f"{slot}: {names[slot]}",
+                    "Arm": _display_arm_label(
+                        summary,
+                        slot,
+                        names.get(slot),
+                    ),
                     "Slot": slot,
                 }
             )
@@ -127,7 +168,7 @@ def _line_chart(
                 go.Scatter(
                     x=group["Elapsed seconds"],
                     y=group[value_column],
-                    name=group["Network"].iloc[0],
+                    name=group["Arm"].iloc[0],
                     mode="lines",
                     line={"color": COLORS.get(slot), "width": 2.5},
                     hovertemplate=(
@@ -141,16 +182,124 @@ def _line_chart(
         xaxis_title="Virtual time (seconds)",
         yaxis_title=value_column,
         hovermode="x unified",
-        legend_title="Network",
+        legend_title="Comparison arm",
         margin={"l": 20, "r": 20, "t": 55, "b": 20},
     )
     st.plotly_chart(figure, width="stretch")
 
 
+def _experiment_name(results: dict[str, Any]) -> str:
+    run = results["run"]
+    snapshot = run.get("configuration_snapshot_json") or {}
+    experiment = snapshot.get("experiment") if isinstance(snapshot, dict) else {}
+    if isinstance(experiment, dict) and experiment.get("name"):
+        return str(experiment["name"])
+    return str(run.get("name") or "Simulation")
+
+
+def _incentive_effectiveness_frame(
+    results: dict[str, Any],
+    summary: dict[str, Any],
+) -> pd.DataFrame:
+    """Build the primary evaluation table from persisted arm summaries."""
+    metric_specs = [
+        ("Final retention rate", "final_retention_rate", "higher"),
+        ("Average active-device ratio", "average_active_device_ratio", "higher"),
+        ("Opportunity participation rate", "opportunity_participation_rate", "higher"),
+        ("Churn rate", "churn_rate", "lower"),
+        ("Useful contribution count", "useful_contribution_count", "higher"),
+        ("Useful contribution rate", "useful_contribution_rate", "higher"),
+        (
+            "Useful contribution per active device",
+            "useful_contribution_per_active_device",
+            "higher",
+        ),
+        ("Total rewards", "total_rewards", "neutral"),
+        ("Total penalties", "total_penalties", "lower"),
+        ("Net incentive cost", "net_incentive_cost", "lower"),
+        (
+            "Incentive cost per useful contribution",
+            "incentive_cost_per_useful_contribution",
+            "lower",
+        ),
+        ("Reward distribution fairness", "reward_distribution_fairness", "higher"),
+        ("Utility distribution fairness", "utility_distribution_fairness", "higher"),
+    ]
+    arm_by_slot = {arm["network_slot"]: arm for arm in _arms(results)}
+    rows = []
+    for display_name, key, direction in metric_specs:
+        value_a = _metric_value(arm_by_slot.get("A", {}), key)
+        value_b = _metric_value(arm_by_slot.get("B", {}), key)
+        if value_a is None and value_b is None:
+            continue
+        winner = _winner_for_values(value_a, value_b, direction)
+        rows.append(
+            {
+                "Metric": display_name,
+                _arm_roles(summary)["A"]: value_a,
+                _arm_roles(summary)["B"]: value_b,
+                "Winner": (
+                    _arm_roles(summary).get(winner)
+                    if winner in {"A", "B"}
+                    else "Tie"
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _winner_for_values(
+    value_a: Any,
+    value_b: Any,
+    direction: str,
+) -> str | None:
+    if value_a is None or value_b is None:
+        return None
+    if value_a == value_b or direction == "neutral":
+        return None
+    if direction == "lower":
+        return "A" if value_a < value_b else "B"
+    return "A" if value_a > value_b else "B"
+
+
+def _network_context_frame(
+    results: dict[str, Any],
+    summary: dict[str, Any],
+) -> pd.DataFrame:
+    arms = _arms(results)
+    if len(arms) != 2:
+        return pd.DataFrame()
+    metrics = [
+        ("Throughput (tx/s)", "average_throughput_tps"),
+        ("Average confirmation latency (ms)", "average_confirmation_ms"),
+        ("Total blocks", "total_blocks"),
+        ("Network fees", "total_fees"),
+        ("Confirmed transactions", "confirmed_transactions"),
+    ]
+    by_slot = {arm["network_slot"]: arm for arm in _arms(results)}
+    return pd.DataFrame(
+        [
+            {
+                "Metric": label,
+                _arm_roles(summary)["A"]: _metric_value(
+                    by_slot.get("A", {}),
+                    key,
+                ),
+                _arm_roles(summary)["B"]: _metric_value(
+                    by_slot.get("B", {}),
+                    key,
+                ),
+            }
+            for label, key in metrics
+        ]
+    )
+
+
 database = get_database()
+summary: dict[str, Any] = {}
 page_header(
     "Results",
-    "Inspect economic fairness, participation, and throughput side by side.",
+    "Compare incentive effectiveness under the same IoT environment and network model.",
     icon="query_stats",
 )
 
@@ -206,10 +355,13 @@ st.session_state.selected_simulation_id = selected_id
 
 try:
     with st.spinner("Loading detailed results..."):
-        results = database.simulations.get_simulation_results(selected_id)
+        results = get_simulation_results_view(database, selected_id)
+        summary = _summary(results)
+        arms = _arms(results)
         average_balance = _average_balance_series(
             database,
-            results["networks"],
+            arms,
+            summary,
         )
 except Exception as exc:
     st.error(f"Failed to load simulation results: {exc}")
@@ -217,15 +369,14 @@ except Exception as exc:
 
 run = results["run"]
 comparison = results.get("comparison") or {}
-network_names = {
-    network["network_slot"]: network["network_name"]
-    for network in results["networks"]
-}
+arm_names = _arm_names(summary)
+arm_roles = _arm_roles(summary)
+legacy = bool(summary.get("is_legacy"))
 
 with st.container(border=True):
     title_columns = st.columns([3, 2])
     with title_columns[0]:
-        st.subheader(run["name"])
+        st.subheader(_experiment_name(results))
         st.caption(
             f"Simulation #{run['id']} · {format_datetime(run['completed_at'])} "
             f"· λ={run['poisson_lambda']}/s · "
@@ -236,20 +387,63 @@ with st.container(border=True):
         winner_text = (
             "Tie"
             if winner == "TIE"
-            else network_names.get(winner, "Not scored")
+            else (
+                f"{arm_roles.get(winner, 'Arm')} — "
+                f"{arm_names.get(winner, 'Not scored')}"
+                if winner in {"A", "B"}
+                else "Not scored"
+            )
         )
-        st.metric("Comparison winner", winner_text)
+        st.metric(
+            "Best-performing network"
+            if legacy
+            else "Best-performing incentive mechanism",
+            winner_text,
+        )
 
-summary_frame = _metric_frame(results)
+st.subheader("Experiment context")
+context = {
+    "Experiment": _experiment_name(results),
+    "IoT Environment": summary.get("environment_name") or "—",
+    "Shared Network Model": (
+        summary.get("shared_network_name")
+        if not legacy
+        else "Legacy network comparison"
+    ),
+    "Incentive A" if not legacy else "Network A": (
+        arm_names["A"]
+    ),
+    "Incentive B" if not legacy else "Network B": (
+        arm_names["B"]
+    ),
+    "Comparison model": (
+        "Incentive mechanisms"
+        if not legacy
+        else "Legacy networks"
+    ),
+}
+st.dataframe(
+    pd.DataFrame([context]),
+    hide_index=True,
+    width="stretch",
+)
+
+st.subheader("Incentive effectiveness" if not legacy else "Comparison metrics")
+effectiveness_frame = _incentive_effectiveness_frame(results, summary)
+if effectiveness_frame.empty:
+    st.info("No incentive-effectiveness metrics were stored for this run.")
+else:
+    st.dataframe(effectiveness_frame, hide_index=True, width="stretch")
+
 metric_columns = st.columns(4)
 metric_columns[0].metric(
-    "Network A score",
+    f"{arm_roles['A']} score",
     comparison.get("score_a") or 0,
     border=True,
     format="%.2f",
 )
 metric_columns[1].metric(
-    "Network B score",
+    f"{arm_roles['B']} score",
     comparison.get("score_b") or 0,
     border=True,
     format="%.2f",
@@ -280,51 +474,43 @@ if chart_tabs[1].open:
     with chart_tabs[1]:
         gini_series = _network_series(
             results,
+            summary,
             "gini_coefficient",
             "Gini coefficient",
         )
         _line_chart(
             gini_series,
             value_column="Gini coefficient",
-            title="Gini coefficient over time",
+            title="Balance fairness over time",
         )
 if chart_tabs[2].open:
     with chart_tabs[2]:
         throughput_series = _network_series(
             results,
+            summary,
             "throughput_tps",
             "Throughput (tx/s)",
         )
         _line_chart(
             throughput_series,
             value_column="Throughput (tx/s)",
-            title="Confirmed transaction throughput over time",
+            title="Network throughput context",
         )
 
-st.subheader("Final metrics")
-st.dataframe(
-    summary_frame,
-    hide_index=True,
-    column_config={
-        "Network": st.column_config.TextColumn(pinned=True),
-        "Churn rate": st.column_config.NumberColumn(format="%.4f"),
-        "Average balance": st.column_config.NumberColumn(format="%.4f"),
-        "Gini coefficient": st.column_config.NumberColumn(format="%.4f"),
-        "Balance variance": st.column_config.NumberColumn(format="%.4f"),
-        "Total transactions": st.column_config.NumberColumn(format="%d"),
-        "Confirmed transactions": st.column_config.NumberColumn(format="%d"),
-        "Total blocks": st.column_config.NumberColumn(format="%d"),
-        "Throughput (tx/s)": st.column_config.NumberColumn(format="%.4f"),
-        "Comparison score": st.column_config.NumberColumn(format="%.2f"),
-    },
-)
+st.subheader("Network context")
+network_context = _network_context_frame(results, summary)
+if network_context.empty:
+    st.info("No network-context metrics were stored for this run.")
+else:
+    st.dataframe(network_context, hide_index=True, width="stretch")
 
-export_rows = summary_frame.fillna("—").to_dict("records")
+export_frame = effectiveness_frame if not effectiveness_frame.empty else network_context
+export_rows = export_frame.fillna("—").to_dict("records")
 export_columns = st.columns([1, 1, 4])
 with export_columns[0]:
     st.download_button(
         "Download CSV",
-        data=dataframe_to_csv(summary_frame),
+        data=dataframe_to_csv(export_frame),
         file_name=f"simulation-{selected_id}-results.csv",
         mime="text/csv",
         icon=":material/download:",
@@ -334,7 +520,7 @@ with export_columns[1]:
     st.download_button(
         "Download PDF",
         data=results_pdf(
-            title=run["name"],
+            title=_experiment_name(results),
             simulation_id=selected_id,
             rows=export_rows,
         ),
@@ -344,14 +530,24 @@ with export_columns[1]:
         width="stretch",
     )
 
-st.subheader("Per-metric comparison")
-comparison_frame = pd.DataFrame(results["comparison_metrics"])
+st.subheader("Detailed comparison")
+comparison_frame = pd.DataFrame(results.get("comparison_metrics") or [])
 if comparison_frame.empty:
-    st.info("No comparison metrics were stored for this run.")
+    st.info("No detailed comparison metrics were stored for this run.")
 else:
+    comparison_frame = comparison_frame.copy()
+    if "details_json" in comparison_frame:
+        comparison_frame["Category"] = comparison_frame["details_json"].map(
+            lambda value: (
+                value.get("category", "comparison")
+                if isinstance(value, dict)
+                else "comparison"
+            )
+        )
     st.dataframe(
         comparison_frame[
             [
+                "Category",
                 "display_name",
                 "value_a",
                 "value_b",
@@ -362,13 +558,14 @@ else:
         ],
         hide_index=True,
         column_config={
+            "Category": "Metric category",
             "display_name": "Metric",
             "value_a": st.column_config.NumberColumn(
-                "Network A",
+                arm_roles["A"],
                 format="%.4f",
             ),
             "value_b": st.column_config.NumberColumn(
-                "Network B",
+                arm_roles["B"],
                 format="%.4f",
             ),
             "absolute_delta": st.column_config.NumberColumn(
