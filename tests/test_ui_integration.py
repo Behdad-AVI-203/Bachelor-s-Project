@@ -127,15 +127,63 @@ def test_complete_ui_research_workflow(tmp_path):
             networks[1]["id"]
         )
         assert custom["code_artifacts"][0]["source_code"] == CUSTOM_UI_REWARD
+        incentive_a_id = database.configurations.create_incentive_config(
+            name="UI incentive A",
+            version=1,
+            implementation_type="built_in",
+            built_in_key="default_reward",
+            parameters={"base_iot_reward": 1.0},
+        )
+        incentive_b_artifact_id = (
+            database.configurations.create_code_artifact(
+                artifact_type="incentive_mechanism",
+                name="UI incentive B code",
+                entrypoint="evaluate",
+                source_code=(
+                    "def evaluate(context):\n"
+                    "    return {'reward_delta': 1.5, "
+                    "'contribution_delta': 1.0}\n"
+                ),
+                validation_status="valid",
+            )
+        )
+        incentive_b_id = database.configurations.create_incentive_config(
+            name="UI incentive B",
+            version=1,
+            implementation_type="custom",
+            code_artifact_id=incentive_b_artifact_id,
+        )
+        experiment_id = database.configurations.create_experiment_config(
+            name="UI incentive experiment",
+            description="Created for the Run Simulation UI test.",
+            environment_id=environments[0]["id"],
+            network_config_id=networks[0]["id"],
+            incentive_a_config_id=incentive_a_id,
+            incentive_b_config_id=incentive_b_id,
+            poisson_lambda=3.0,
+            duration_seconds=30.0,
+            sample_interval_ms=1_000,
+            default_random_seed=42,
+            traffic_mix={
+                "transfer": 0.2,
+                "iot_data": 0.7,
+                "feedback": 0.1,
+            },
+            parameters={
+                "transfer_amount_min": 0.1,
+                "transfer_amount_max": 2.0,
+                "positive_feedback_probability": 0.75,
+            },
+        )
 
     run_page = _page_app(
         "app_pages/run_simulation.py",
         database_path,
     )
-    run_page.text_input[0].set_value("UI end-to-end simulation")
-    _number_input(run_page, "Duration (seconds)").set_value(30.0)
-    _number_input(run_page, "Poisson λ (tx/s)").set_value(3.0)
-    _number_input(run_page, "Random seed (optional)").set_value(42)
+    run_page.selectbox[0].set_value(experiment_id)
+    run_page.text_input(key="simulation_run_name").set_value(
+        "UI end-to-end simulation"
+    )
     _button(run_page, "Run simulation").click()
     run_page.run()
     _assert_no_exceptions(run_page)
