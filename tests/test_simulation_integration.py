@@ -65,6 +65,108 @@ def test_dual_network_simulation_uses_one_event_stream(
 
 
 @pytest.mark.integration
+def test_incentive_comparison_simulation_shares_one_network(
+    database,
+):
+    environment_id = create_environment(
+        database,
+        name="Incentive environment",
+        device_count=4,
+    )
+    network_id = create_network(
+        database,
+        name="Shared PoW network",
+        reward_code=None,
+    )
+    reward_a_id = database.configurations.create_code_artifact(
+        artifact_type="reward_function",
+        name="Incentive A reward",
+        entrypoint="calculate_reward",
+        source_code=(
+            "def calculate_reward(context):\n"
+            "    return 1.0\n"
+        ),
+        validation_status="valid",
+    )
+    reward_b_id = database.configurations.create_code_artifact(
+        artifact_type="incentive_mechanism",
+        name="Incentive B reward",
+        entrypoint="evaluate_incentive",
+        source_code=(
+            "def evaluate_incentive(context):\n"
+            "    return {'reward': 2.0, 'participation_signal': 0.5}\n"
+        ),
+        validation_status="valid",
+    )
+    incentive_a_id = database.configurations.create_incentive_config(
+        name="Incentive A",
+        implementation_type="legacy_reward",
+        code_artifact_id=reward_a_id,
+    )
+    incentive_b_id = database.configurations.create_incentive_config(
+        name="Incentive B",
+        implementation_type="custom",
+        code_artifact_id=reward_b_id,
+    )
+    experiment_id = database.configurations.create_experiment_config(
+        name="Incentive comparison run",
+        environment_id=environment_id,
+        network_config_id=network_id,
+        incentive_a_config_id=incentive_a_id,
+        incentive_b_config_id=incentive_b_id,
+        poisson_lambda=3,
+        duration_seconds=10,
+        sample_interval_ms=1_000,
+        default_random_seed=42,
+        traffic_mix={"iot_data": 1.0},
+    )
+
+    result = SimulationEngine(database).run_experiment(
+        experiment_id,
+        random_seed=42,
+    )
+    run = database.get_record(
+        "simulation_runs",
+        {"id": result.simulation_id},
+    )
+    arms = database.list_records(
+        "simulation_networks",
+        filters={"simulation_id": result.simulation_id},
+        order_by="network_slot",
+    )
+    stored_events = database.list_records(
+        "simulation_events",
+        filters={"simulation_id": result.simulation_id},
+    )
+    stored = database.simulations.get_simulation_results(
+        result.simulation_id,
+    )
+
+    assert run["configuration_snapshot_json"]["experiment"][
+        "comparison_model"
+    ] == "incentive_mechanisms"
+    assert len(arms) == 2
+    assert {arm["network_config_id"] for arm in arms} == {network_id}
+    assert {
+        arm["configuration_snapshot_json"]["incentive_bundle"][
+            "incentive"
+        ]["name"]
+        for arm in arms
+    } == {"Incentive A", "Incentive B"}
+    assert result.event_count == len(stored_events)
+    assert {
+        transaction["event_id"]
+        for transaction in stored["recent_transactions"]["A"]
+    } == {
+        transaction["event_id"]
+        for transaction in stored["recent_transactions"]["B"]
+    }
+    assert result.network_summaries["A"]["total_rewards"] != (
+        result.network_summaries["B"]["total_rewards"]
+    )
+
+
+@pytest.mark.integration
 def test_simulation_is_reproducible_for_same_seed(configured_database):
     database, identifiers = configured_database
     first = SimulationEngine(database).run_experiment(

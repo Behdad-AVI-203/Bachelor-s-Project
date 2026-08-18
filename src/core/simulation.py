@@ -10,7 +10,11 @@ from src.database import DatabaseService
 
 from .blockchain import BlockchainConfig, PoWNetworkModel
 from .errors import CoreError, SimulationError
-from .incentives import RewardIncentiveMechanism
+from .incentives import (
+    IncentiveMechanism,
+    PluginIncentiveMechanism,
+    RewardIncentiveMechanism,
+)
 from .iot import IoTEnvironmentRuntime
 from .metrics import compare_metric, score_comparison
 from .models import ExternalOpportunity
@@ -159,7 +163,7 @@ class SimulationEngine:
             self._attach_opportunity_ids(simulation_id, opportunities)
 
             engines = {
-                row["network_slot"]: self._build_pow_network_model(
+                row["network_slot"]: self._build_network_model(
                     row,
                     environment,
                     random_seed=run["random_seed"],
@@ -475,34 +479,57 @@ class SimulationEngine:
         self.database.simulations.save_comparison(comparison, metrics)
         return comparison
 
-    def _build_pow_network_model(
+    def _build_network_model(
         self,
         network_row: Mapping[str, Any],
         environment: IoTEnvironmentRuntime,
         *,
         random_seed: int,
     ) -> SimulationArmRuntime:
-        bundle = network_row["configuration_snapshot_json"]
-        network = bundle.get("network")
+        arm_bundle = network_row["configuration_snapshot_json"]
+        if not isinstance(arm_bundle, Mapping):
+            raise SimulationError(
+                "Simulation arm snapshot is not a JSON object."
+            )
+
+        if arm_bundle.get("comparison_model") == (
+            "incentive_mechanisms"
+        ):
+            network_bundle = arm_bundle.get("network_bundle")
+            incentive_bundle = arm_bundle.get("incentive_bundle")
+            if not isinstance(network_bundle, Mapping):
+                raise SimulationError(
+                    "Incentive-comparison arm is missing its network bundle."
+                )
+            if not isinstance(incentive_bundle, Mapping):
+                raise SimulationError(
+                    "Incentive-comparison arm is missing its incentive "
+                    "bundle."
+                )
+        else:
+            network_bundle = arm_bundle
+            incentive_bundle = None
+
+        network = network_bundle.get("network")
         if not isinstance(network, Mapping):
             raise SimulationError(
                 "Network configuration snapshot is missing its network data."
             )
         artifacts = {
             artifact["id"]: artifact
-            for artifact in bundle.get("code_artifacts", [])
+            for artifact in network_bundle.get("code_artifacts", [])
         }
 
-        reward_function = self._load_artifact_function(
-            artifacts,
-            network.get("reward_artifact_id"),
-            "reward function",
-        )
         transaction_logic = self._load_artifact_function(
             artifacts,
             network.get("blockchain_logic_artifact_id"),
             "blockchain logic",
         )
+        consensus_type = str(network.get("consensus_type", "pow")).lower()
+        if consensus_type != "pow":
+            raise SimulationError(
+                f"Unsupported network consensus type: {consensus_type}."
+            )
         config = BlockchainConfig(
             network_name=str(network["name"]),
             network_slot=str(network_row["network_slot"]),
@@ -522,8 +549,90 @@ class SimulationEngine:
                 config=config,
                 random_seed=random_seed,
             ),
-            incentive_mechanism=RewardIncentiveMechanism(reward_function),
+            incentive_mechanism=self._load_incentive_mechanism(
+                incentive_bundle,
+                network_bundle,
+            ),
             random_seed=random_seed,
+        )
+
+    def _build_pow_network_model(
+        self,
+        network_row: Mapping[str, Any],
+        environment: IoTEnvironmentRuntime,
+        *,
+        random_seed: int,
+    ) -> SimulationArmRuntime:
+        """Compatibility wrapper for callers using the old private helper."""
+        return self._build_network_model(
+            network_row,
+            environment,
+            random_seed=random_seed,
+        )
+
+    def _load_incentive_mechanism(
+        self,
+        incentive_bundle: Mapping[str, Any] | None,
+        network_bundle: Mapping[str, Any],
+    ) -> IncentiveMechanism:
+        if incentive_bundle is None:
+            network = network_bundle.get("network")
+            if not isinstance(network, Mapping):
+                raise SimulationError(
+                    "Network snapshot is missing its network data."
+                )
+            reward_function = self._load_artifact_function(
+                {
+                    artifact["id"]: artifact
+                    for artifact in network_bundle.get("code_artifacts", [])
+                },
+                network.get("reward_artifact_id"),
+                "reward function",
+            )
+            return RewardIncentiveMechanism(reward_function)
+
+        incentive = incentive_bundle.get("incentive")
+        if not isinstance(incentive, Mapping):
+            raise SimulationError(
+                "Incentive bundle is missing its configuration."
+            )
+        artifacts = {
+            artifact["id"]: artifact
+            for artifact in incentive_bundle.get("code_artifacts", [])
+        }
+        implementation_type = str(
+            incentive.get("implementation_type", "")
+        )
+        parameters = dict(incentive.get("parameters_json") or {})
+        if implementation_type == "built_in":
+            return RewardIncentiveMechanism(parameters=parameters)
+        if implementation_type == "custom":
+            function = self._load_artifact_function(
+                artifacts,
+                incentive.get("code_artifact_id"),
+                "incentive mechanism",
+            )
+            if function is None:
+                raise SimulationError(
+                    "Custom incentive configuration has no code artifact."
+                )
+            return PluginIncentiveMechanism(
+                function,
+                parameters=parameters,
+            )
+        if implementation_type == "legacy_reward":
+            function = self._load_artifact_function(
+                artifacts,
+                incentive.get("code_artifact_id"),
+                "incentive mechanism",
+            )
+            return RewardIncentiveMechanism(
+                function,
+                parameters=parameters,
+            )
+        raise SimulationError(
+            "Unsupported incentive implementation type: "
+            f"{implementation_type}."
         )
 
     @staticmethod

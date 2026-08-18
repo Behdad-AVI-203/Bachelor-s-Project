@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from .errors import IncentiveError, PluginExecutionError
 
 RewardFunction = Callable[[Mapping[str, Any]], Any]
+IncentiveFunction = Callable[[Mapping[str, Any]], Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,15 +71,18 @@ class RewardIncentiveMechanism:
     """Preserve the existing reward function behind the new contract."""
 
     reward_function: RewardFunction | None = None
+    parameters: Mapping[str, Any] = field(default_factory=dict)
 
     def evaluate(self, context: IncentiveContext) -> IncentiveOutcome:
         """Calculate the current IoT-data reward without network coupling."""
         if context.legacy_reward_override is not None:
             reward = context.legacy_reward_override
         elif self.reward_function is None:
-            parameters = context.network.get("parameters")
-            if not isinstance(parameters, Mapping):
-                parameters = {}
+            parameters = dict(self.parameters)
+            if not parameters:
+                network_parameters = context.network.get("parameters")
+                if isinstance(network_parameters, Mapping):
+                    parameters = dict(network_parameters)
             base_reward = float(parameters.get("base_iot_reward", 1.0))
             feedback_weight = float(parameters.get("feedback_weight", 0.1))
             reward = (
@@ -111,3 +115,92 @@ class RewardIncentiveMechanism:
                 f"{label.title()} must be finite and non-negative."
             )
         return number
+
+
+@dataclass(frozen=True, slots=True)
+class PluginIncentiveMechanism:
+    """Adapt a generic incentive plugin result to ``IncentiveOutcome``."""
+
+    incentive_function: IncentiveFunction
+    parameters: Mapping[str, Any] = field(default_factory=dict)
+
+    def evaluate(self, context: IncentiveContext) -> IncentiveOutcome:
+        plugin_context = context.to_plugin_context()
+        plugin_context["incentive_parameters"] = dict(self.parameters)
+        try:
+            result = self.incentive_function(plugin_context)
+        except PluginExecutionError:
+            raise
+        except Exception as exc:
+            raise IncentiveError(
+                f"Incentive mechanism failed: {exc}."
+            ) from exc
+
+        if isinstance(result, Mapping):
+            details = result.get("details") or {}
+            if not isinstance(details, Mapping):
+                raise IncentiveError(
+                    "Incentive plugin details must be a mapping."
+                )
+            return IncentiveOutcome(
+                reward=self._number(result.get("reward", 0), "reward"),
+                penalty=self._number(
+                    result.get("penalty", 0),
+                    "penalty",
+                ),
+                contribution_score=self._optional_number(
+                    result.get("contribution_score"),
+                    "contribution score",
+                ),
+                reputation_delta=self._number(
+                    result.get("reputation_delta", 0),
+                    "reputation delta",
+                    allow_negative=True,
+                ),
+                participation_signal=self._optional_number(
+                    result.get("participation_signal"),
+                    "participation signal",
+                    allow_negative=True,
+                ),
+                details=dict(details),
+            )
+
+        return IncentiveOutcome(
+            reward=self._number(result, "reward"),
+        )
+
+    @staticmethod
+    def _number(
+        value: Any,
+        label: str,
+        *,
+        allow_negative: bool = False,
+    ) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise IncentiveError(f"{label.title()} must be numeric.") from exc
+        if not math.isfinite(number) or (
+            not allow_negative and number < 0
+        ):
+            raise IncentiveError(
+                f"{label.title()} must be finite and "
+                f"{'numeric' if allow_negative else 'non-negative'}."
+            )
+        return number
+
+    @classmethod
+    def _optional_number(
+        cls,
+        value: Any,
+        label: str,
+        *,
+        allow_negative: bool = False,
+    ) -> float | None:
+        if value is None:
+            return None
+        return cls._number(
+            value,
+            label,
+            allow_negative=allow_negative,
+        )

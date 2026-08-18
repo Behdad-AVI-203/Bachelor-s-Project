@@ -27,6 +27,7 @@ from .incentives import (
     IncentiveContext,
     IncentiveMechanism,
     IncentiveOutcome,
+    PluginIncentiveMechanism,
     RewardIncentiveMechanism,
 )
 from .iot import (
@@ -77,6 +78,7 @@ __all__ = [
     "NonParticipationRecord",
     "ParticipationContext",
     "ParticipationDecision",
+    "PluginIncentiveMechanism",
     "PluginError",
     "PluginExecutionError",
     "PluginValidationError",

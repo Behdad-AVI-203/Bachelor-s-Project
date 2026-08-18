@@ -62,19 +62,53 @@ class SimulationRepository:
             )
 
             network_ids = {}
-            for slot, bundle_key, config_key in (
-                ("A", "network_a_bundle", "network_a_config_id"),
-                ("B", "network_b_bundle", "network_b_config_id"),
+            if experiment.get("comparison_model") == (
+                "incentive_mechanisms"
             ):
+                arm_specs = (
+                    (
+                        "A",
+                        "incentive_a_bundle",
+                        "incentive_a_config_id",
+                    ),
+                    (
+                        "B",
+                        "incentive_b_bundle",
+                        "incentive_b_config_id",
+                    ),
+                )
+                network_bundle = snapshot["network_bundle"]
+            else:
+                arm_specs = (
+                    ("A", "network_a_bundle", "network_a_config_id"),
+                    ("B", "network_b_bundle", "network_b_config_id"),
+                )
+                network_bundle = None
+
+            for slot, bundle_key, config_key in arm_specs:
+                if network_bundle is None:
+                    arm_snapshot = snapshot[bundle_key]
+                    network_config_id = experiment[config_key]
+                else:
+                    arm_snapshot = {
+                        "schema_version": snapshot["schema_version"],
+                        "bundle_type": "simulation_arm",
+                        "comparison_model": (
+                            "incentive_mechanisms"
+                        ),
+                        "network_bundle": network_bundle,
+                        "incentive_bundle": snapshot[bundle_key],
+                    }
+                    network_config_id = experiment["network_config_id"]
                 network_ids[slot] = self.database._insert(
                     connection,
                     "simulation_networks",
                     {
                         "simulation_id": simulation_id,
                         "network_slot": slot,
-                        "network_config_id": experiment[config_key],
+                        "network_config_id": network_config_id,
                         "status": "created",
-                        "configuration_snapshot_json": snapshot[bundle_key],
+                        "configuration_snapshot_json": arm_snapshot,
                     },
                 )
 
@@ -132,6 +166,10 @@ class SimulationRepository:
             "simulation_id": simulation_id,
             "network_a_id": network_ids["A"],
             "network_b_id": network_ids["B"],
+            "comparison_model": experiment.get(
+                "comparison_model",
+                "legacy_networks",
+            ),
             "random_seed": selected_seed,
             "device_count": len(simulation_devices),
         }
