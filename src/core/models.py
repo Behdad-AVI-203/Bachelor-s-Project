@@ -49,7 +49,12 @@ class NetworkDeviceState:
     active: bool = True
     reserved_balance: float = 0
     cumulative_reward: float = 0
+    cumulative_penalties: float = 0
     cumulative_cost: float = 0
+    reputation_score: float = 0
+    contribution_score: float = 0
+    useful_contribution_count: int = 0
+    last_participation_signal: float | None = None
     feedback_score: float = 0
     submitted_transactions: int = 0
     confirmed_transactions: int = 0
@@ -60,7 +65,11 @@ class NetworkDeviceState:
     @property
     def cumulative_profit(self) -> float:
         """Return reward income minus device and transaction costs."""
-        return self.cumulative_reward - self.cumulative_cost
+        return (
+            self.cumulative_reward
+            - self.cumulative_penalties
+            - self.cumulative_cost
+        )
 
     @property
     def available_balance(self) -> float:

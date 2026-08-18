@@ -283,6 +283,15 @@ class PoWNetworkModel(NetworkModel):
                     "reserved_balance": state.reserved_balance,
                     "average_data_profit": state.average_data_profit,
                     "data_submissions": state.data_submissions,
+                    "cumulative_penalties": state.cumulative_penalties,
+                    "reputation_score": state.reputation_score,
+                    "contribution_score": state.contribution_score,
+                    "useful_contribution_count": (
+                        state.useful_contribution_count
+                    ),
+                    "last_participation_signal": (
+                        state.last_participation_signal
+                    ),
                 },
             }
             for state in self.device_states.values()

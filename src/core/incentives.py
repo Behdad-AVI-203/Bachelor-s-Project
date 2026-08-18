@@ -47,16 +47,58 @@ class IncentiveContext:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class IncentiveOutcome:
     """Economic and policy effects produced by an incentive mechanism."""
 
-    reward: float = 0
-    penalty: float = 0
+    reward: float
+    penalty: float
     contribution_score: float | None = None
     reputation_delta: float = 0
     participation_signal: float | None = None
     details: dict[str, Any] = field(default_factory=dict)
+
+    def __init__(
+        self,
+        reward: float = 0,
+        penalty: float = 0,
+        contribution_score: float | None = None,
+        reputation_delta: float = 0,
+        participation_signal: float | None = None,
+        details: dict[str, Any] | None = None,
+        *,
+        reward_delta: float | None = None,
+        penalty_delta: float | None = None,
+        contribution_delta: float | None = None,
+    ) -> None:
+        """Create an outcome while accepting both current and legacy names."""
+        if reward_delta is not None:
+            reward = reward_delta
+        if penalty_delta is not None:
+            penalty = penalty_delta
+        if contribution_delta is not None:
+            contribution_score = contribution_delta
+        object.__setattr__(self, "reward", reward)
+        object.__setattr__(self, "penalty", penalty)
+        object.__setattr__(self, "contribution_score", contribution_score)
+        object.__setattr__(self, "reputation_delta", reputation_delta)
+        object.__setattr__(self, "participation_signal", participation_signal)
+        object.__setattr__(self, "details", dict(details or {}))
+
+    @property
+    def reward_delta(self) -> float:
+        """Return the reward change using the generic delta terminology."""
+        return float(self.reward)
+
+    @property
+    def penalty_delta(self) -> float:
+        """Return the penalty change using the generic delta terminology."""
+        return float(self.penalty)
+
+    @property
+    def contribution_delta(self) -> float:
+        """Return the contribution change for this outcome."""
+        return float(self.contribution_score or 0)
 
 
 class IncentiveMechanism(Protocol):
@@ -143,14 +185,21 @@ class PluginIncentiveMechanism:
                     "Incentive plugin details must be a mapping."
                 )
             return IncentiveOutcome(
-                reward=self._number(result.get("reward", 0), "reward"),
-                penalty=self._number(
-                    result.get("penalty", 0),
+                reward_delta=self._number(
+                    result.get("reward_delta", result.get("reward", 0)),
+                    "reward",
+                ),
+                penalty_delta=self._number(
+                    result.get("penalty_delta", result.get("penalty", 0)),
                     "penalty",
                 ),
-                contribution_score=self._optional_number(
-                    result.get("contribution_score"),
-                    "contribution score",
+                contribution_delta=self._optional_number(
+                    result.get(
+                        "contribution_delta",
+                        result.get("contribution_score"),
+                    ),
+                    "contribution delta",
+                    allow_negative=True,
                 ),
                 reputation_delta=self._number(
                     result.get("reputation_delta", 0),

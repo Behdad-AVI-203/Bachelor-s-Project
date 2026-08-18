@@ -54,6 +54,10 @@ class SimulationArmRuntime:
         self.last_incentive_outcomes: dict[int, IncentiveOutcome] = {}
         self.opportunities_seen = 0
         self.actions_created = 0
+        self.incentive_evaluations = 0
+        self.useful_contribution_count = 0
+        self._total_reward = 0.0
+        self._total_penalty = 0.0
         self._device_opportunities: dict[int, int] = {}
         self._device_actions: dict[int, int] = {}
 
@@ -176,6 +180,7 @@ class SimulationArmRuntime:
         records = self.network_model.device_state_records(elapsed_ms)
         for record in records:
             device_id = int(record["simulation_device_id"])
+            state = self.device_states.get(device_id)
             extra_state = dict(record.get("extra_state_json") or {})
             opportunities = self._device_opportunities.get(device_id, 0)
             actions = self._device_actions.get(device_id, 0)
@@ -186,6 +191,22 @@ class SimulationArmRuntime:
                     "non_participation_count": opportunities - actions,
                 }
             )
+            if state is not None:
+                extra_state.update(
+                    {
+                        "cumulative_penalties": (
+                            state.cumulative_penalties
+                        ),
+                        "reputation_score": state.reputation_score,
+                        "contribution_score": state.contribution_score,
+                        "useful_contribution_count": (
+                            state.useful_contribution_count
+                        ),
+                        "last_participation_signal": (
+                            state.last_participation_signal
+                        ),
+                    }
+                )
             record["extra_state_json"] = extra_state
         return records
 
@@ -259,9 +280,11 @@ class SimulationArmRuntime:
                         outcome,
                     )
                 )
-                transaction.reward = incentive_outcome.reward
-                state.balance += incentive_outcome.reward
-                state.cumulative_reward += incentive_outcome.reward
+                self._apply_incentive_outcome(
+                    transaction,
+                    state,
+                    incentive_outcome,
+                )
                 self.last_incentive_outcomes[
                     state.profile.database_id
                 ] = incentive_outcome
@@ -276,6 +299,38 @@ class SimulationArmRuntime:
                     outcome,
                     incentive_outcome,
                 )
+
+    def _apply_incentive_outcome(
+        self,
+        transaction: NetworkTransaction,
+        state: NetworkDeviceState,
+        outcome: IncentiveOutcome,
+    ) -> None:
+        """Apply incentive effects to runtime state outside the network model."""
+        reward_delta = outcome.reward_delta
+        penalty_delta = outcome.penalty_delta
+        contribution_delta = outcome.contribution_delta
+
+        transaction.reward = reward_delta
+        state.balance += reward_delta - penalty_delta
+        state.cumulative_reward += reward_delta
+        state.cumulative_penalties += penalty_delta
+        state.reputation_score += outcome.reputation_delta
+        state.contribution_score += contribution_delta
+        state.last_participation_signal = outcome.participation_signal
+
+        self.incentive_evaluations += 1
+        self._total_reward += reward_delta
+        self._total_penalty += penalty_delta
+
+        useful = outcome.details.get("useful_contribution")
+        if useful is None:
+            useful = outcome.details.get("useful")
+        if useful is None:
+            useful = contribution_delta > 0
+        if bool(useful):
+            state.useful_contribution_count += 1
+            self.useful_contribution_count += 1
 
     def _incentive_context(
         self,
@@ -347,16 +402,50 @@ class SimulationArmRuntime:
 
     def _participation_statistics(self) -> dict[str, Any]:
         no_action_count = len(self.non_participation_records)
-        return {
+        participation_rate = (
+            self.actions_created / self.opportunities_seen
+            if self.opportunities_seen
+            else 0
+        )
+        states = list(self.device_states.values())
+        device_count = len(states)
+        statistics = {
             "opportunities_seen": self.opportunities_seen,
             "actions_created": self.actions_created,
             "non_participation_count": no_action_count,
-            "opportunity_participation_rate": (
-                self.actions_created / self.opportunities_seen
-                if self.opportunities_seen
-                else 0
-            ),
+            "opportunity_participation_rate": participation_rate,
         }
+        if self.incentive_evaluations:
+            statistics.update(
+                {
+                    "participation_rate": participation_rate,
+                    "average_reward": (
+                        self._total_reward / self.incentive_evaluations
+                    ),
+                    "average_penalty": (
+                        self._total_penalty / self.incentive_evaluations
+                    ),
+                    "average_reputation": (
+                        sum(state.reputation_score for state in states)
+                        / device_count
+                        if device_count
+                        else 0
+                    ),
+                    "average_contribution": (
+                        sum(state.contribution_score for state in states)
+                        / device_count
+                        if device_count
+                        else 0
+                    ),
+                    "useful_contribution_count": (
+                        self.useful_contribution_count
+                    ),
+                    "incentive_evaluation_count": (
+                        self.incentive_evaluations
+                    ),
+                }
+            )
+        return statistics
 
     @staticmethod
     def _device_context(state: NetworkDeviceState) -> dict[str, Any]:
@@ -379,7 +468,16 @@ class SimulationArmRuntime:
             "churn_reason": state.churn_reason,
             "feedback_score": state.feedback_score,
             "cumulative_reward": state.cumulative_reward,
+            "cumulative_penalties": state.cumulative_penalties,
             "cumulative_cost": state.cumulative_cost,
+            "reputation_score": state.reputation_score,
+            "contribution_score": state.contribution_score,
+            "useful_contribution_count": (
+                state.useful_contribution_count
+            ),
+            "last_participation_signal": (
+                state.last_participation_signal
+            ),
             "data_submissions": state.data_submissions,
         }
 

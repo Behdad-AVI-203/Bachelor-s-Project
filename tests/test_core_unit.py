@@ -21,6 +21,7 @@ from src.core import (
     NetworkModel,
     NetworkOutcome,
     ParticipationContext,
+    PluginIncentiveMechanism,
     PluginExecutionError,
     PluginValidationError,
     PoWNetworkModel,
@@ -274,6 +275,101 @@ def test_profit_expectation_behavior_uses_incentive_signal():
     assert churn_decision.utility == pytest.approx(-1.0)
     assert retained_decision.active
     assert retained_decision.utility == pytest.approx(1.0)
+
+
+def test_incentive_outcome_supports_generic_delta_names():
+    outcome = IncentiveOutcome(
+        reward_delta=2.0,
+        penalty_delta=0.5,
+        contribution_delta=1.25,
+        reputation_delta=-0.2,
+        participation_signal=0.4,
+    )
+
+    assert outcome.reward == pytest.approx(2.0)
+    assert outcome.reward_delta == pytest.approx(2.0)
+    assert outcome.penalty == pytest.approx(0.5)
+    assert outcome.penalty_delta == pytest.approx(0.5)
+    assert outcome.contribution_score == pytest.approx(1.25)
+    assert outcome.contribution_delta == pytest.approx(1.25)
+
+
+def test_incentive_state_updates_and_metrics_are_persistable():
+    runtime = _runtime(execution_cost=0.0)
+    arm = SimulationArmRuntime(
+        network_model=PoWNetworkModel(
+            simulation_network_id=1,
+            environment=runtime,
+            config=_blockchain_config(transaction_fee_rate=0.0),
+            random_seed=7,
+        ),
+        incentive_mechanism=PluginIncentiveMechanism(
+            lambda context: {
+                "reward_delta": 2.0,
+                "penalty_delta": 0.5,
+                "reputation_delta": 0.25,
+                "contribution_delta": 1.0,
+                "participation_signal": 0.5,
+                "details": {"useful_contribution": True},
+            }
+        ),
+    )
+    arm.process_opportunity(
+        ExternalOpportunity(
+            sequence_number=0,
+            scheduled_at_ms=100,
+            event_type=TransactionType.IOT_DATA,
+            sender_device_id=1,
+            target_device_id=None,
+            payload={"value": 20.0},
+        )
+    )
+    arm.flush(100)
+
+    state = arm.device_states[1]
+    assert state.balance == pytest.approx(11.5)
+    assert state.cumulative_reward == pytest.approx(2.0)
+    assert state.cumulative_penalties == pytest.approx(0.5)
+    assert state.reputation_score == pytest.approx(0.25)
+    assert state.contribution_score == pytest.approx(1.0)
+    assert state.useful_contribution_count == 1
+    assert state.last_participation_signal == pytest.approx(0.5)
+
+    summary = arm.summary_record()["custom_summary_json"]
+    assert summary["participation_rate"] == pytest.approx(1.0)
+    assert summary["average_reward"] == pytest.approx(2.0)
+    assert summary["average_penalty"] == pytest.approx(0.5)
+    assert summary["average_reputation"] == pytest.approx(0.125)
+    assert summary["average_contribution"] == pytest.approx(0.5)
+    assert summary["useful_contribution_count"] == 1
+
+    state_record = arm.device_state_records(100)[0]["extra_state_json"]
+    assert state_record["cumulative_penalties"] == pytest.approx(0.5)
+    assert state_record["reputation_score"] == pytest.approx(0.25)
+    assert state_record["contribution_score"] == pytest.approx(1.0)
+
+
+def test_penalties_and_reputation_influence_future_participation():
+    behavior = ProfitExpectationBehavior()
+    decision = behavior.decide_participation(
+        ParticipationContext(
+            device={"profit_expectation": 0.0},
+            device_state={
+                "active": True,
+                "cumulative_reward": 1.0,
+                "cumulative_penalties": 2.0,
+                "cumulative_cost": 0.0,
+                "data_submissions": 1,
+                "reputation_score": -1.0,
+                "contribution_score": 0.0,
+            },
+            action={"action_type": "iot_data"},
+            network_outcome={"status": "confirmed"},
+        )
+    )
+
+    assert not decision.active
+    assert decision.utility == pytest.approx(-1.1)
 
 
 def test_default_behavior_turns_active_opportunity_into_action():

@@ -109,7 +109,23 @@ class ProfitExpectationBehavior:
             incentive_signal = float(
                 context.incentive_outcome.participation_signal
             )
-        utility = average_profit + incentive_signal
+        parameters = context.device.get("parameters", {})
+        if not isinstance(parameters, Mapping):
+            parameters = {}
+        reputation_weight = float(
+            parameters.get("reputation_weight", 0.1)
+        )
+        contribution_weight = float(
+            parameters.get("contribution_weight", 0.1)
+        )
+        utility = (
+            average_profit
+            + incentive_signal
+            + reputation_weight
+            * float(state.get("reputation_score", 0))
+            + contribution_weight
+            * float(state.get("contribution_score", 0))
+        )
         profit_expectation = float(
             context.device.get("profit_expectation", 0)
         )
@@ -130,5 +146,12 @@ class ProfitExpectationBehavior:
         if data_submissions == 0:
             return None
         cumulative_reward = float(state.get("cumulative_reward", 0))
+        cumulative_penalties = float(
+            state.get("cumulative_penalties", 0)
+        )
         cumulative_cost = float(state.get("cumulative_cost", 0))
-        return (cumulative_reward - cumulative_cost) / data_submissions
+        return (
+            cumulative_reward
+            - cumulative_penalties
+            - cumulative_cost
+        ) / data_submissions
