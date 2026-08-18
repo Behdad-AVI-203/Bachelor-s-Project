@@ -45,6 +45,11 @@ pages = [
         icon=":material/account_tree:",
     ),
     st.Page(
+        "app_pages/incentives.py",
+        title="Incentives",
+        icon=":material/tune:",
+    ),
+    st.Page(
         "app_pages/run_simulation.py",
         title="Run simulation",
         icon=":material/play_circle:",

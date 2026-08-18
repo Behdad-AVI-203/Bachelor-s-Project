@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections import defaultdict
 from collections.abc import Mapping
@@ -14,6 +15,7 @@ from src.core import (
     DeviceGroupConfig,
     IoTEnvironmentDefinition,
 )
+from src.core.errors import PluginValidationError
 from src.core.plugins import load_plugin_function
 from src.database import Database, DatabaseService, RecordNotFoundError
 
@@ -89,6 +91,49 @@ NETWORK_TEMPLATES = {
     },
 }
 
+INCENTIVE_TEMPLATES = {
+    "Default reward": {
+        "description": "Precision-weighted baseline incentive.",
+        "implementation_type": "built_in",
+        "built_in_key": "default_reward",
+        "parameters": {
+            "base_iot_reward": 1.0,
+            "feedback_weight": 0.1,
+        },
+    },
+    "Participation-first": {
+        "description": "A built-in profile intended to favor retention.",
+        "implementation_type": "built_in",
+        "built_in_key": "participation_first",
+        "parameters": {
+            "base_iot_reward": 1.0,
+            "feedback_weight": 0.1,
+            "participation_bonus": 0.25,
+        },
+    },
+    "Fairness-aware": {
+        "description": "A built-in profile reserved for fairness-oriented rules.",
+        "implementation_type": "built_in",
+        "built_in_key": "fairness_aware",
+        "parameters": {
+            "base_iot_reward": 1.0,
+            "feedback_weight": 0.1,
+            "fairness_weight": 0.25,
+        },
+    },
+}
+
+DEFAULT_INCENTIVE_CODE = """def evaluate(context):
+    device = context["device"]
+    parameters = context.get("incentive_parameters", {})
+    base_reward = parameters.get("base_iot_reward", 1.0)
+    return {
+        "reward_delta": base_reward * device.get("precision", 1.0),
+        "contribution_delta": 1.0,
+        "participation_signal": 0.1,
+    }
+"""
+
 
 @st.cache_resource
 def get_database() -> DatabaseService:
@@ -96,6 +141,209 @@ def get_database() -> DatabaseService:
     database = Database(DATABASE_PATH)
     database.initialize()
     return database
+
+
+def list_incentives(database: DatabaseService) -> list[dict[str, Any]]:
+    """Return independent incentive configurations and artifact metadata."""
+    return database.store.execute_query(
+        """
+        SELECT
+            incentive.id,
+            incentive.name,
+            incentive.version,
+            incentive.description,
+            incentive.implementation_type,
+            incentive.built_in_key,
+            incentive.code_artifact_id,
+            incentive.parameters_json,
+            incentive.metadata_json,
+            incentive.created_at,
+            COALESCE(artifact.created_at, incentive.created_at)
+                AS updated_at,
+            artifact.name AS artifact_name,
+            artifact.entrypoint AS artifact_entrypoint,
+            artifact.validation_status
+        FROM incentive_mechanism_configs AS incentive
+        LEFT JOIN code_artifacts AS artifact
+            ON artifact.id = incentive.code_artifact_id
+        ORDER BY incentive.created_at DESC, incentive.id DESC
+        """
+    )
+
+
+def get_incentive_editor_data(
+    database: DatabaseService,
+    incentive_id: int,
+) -> dict[str, Any]:
+    """Load one incentive and its optional source artifact."""
+    incentive = database.configurations.get_incentive_config(incentive_id)
+    artifacts = incentive.get("code_artifacts") or []
+    artifact = next(
+        (
+            item
+            for item in artifacts
+            if item.get("id") == incentive.get("code_artifact_id")
+        ),
+        None,
+    )
+    return {
+        **incentive,
+        "entrypoint": artifact.get("entrypoint") if artifact else "evaluate",
+        "source_code": artifact.get("source_code")
+        if artifact
+        else DEFAULT_INCENTIVE_CODE,
+        "artifact": artifact,
+    }
+
+
+def save_incentive(
+    database: DatabaseService,
+    *,
+    name: str,
+    version: int,
+    description: str | None,
+    implementation_type: str,
+    built_in_key: str | None,
+    source_code: str,
+    entrypoint: str,
+    parameters: Mapping[str, Any] | None,
+    metadata: Mapping[str, Any] | None,
+    incentive_id: int | None = None,
+) -> int:
+    """Validate and create or update an independent incentive."""
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("Incentive name is required.")
+    if version <= 0:
+        raise ValueError("Incentive version must be positive.")
+    if implementation_type not in {
+        "built_in",
+        "custom",
+        "legacy_reward",
+    }:
+        raise ValueError("Unsupported incentive implementation type.")
+
+    clean_key = built_in_key.strip() if built_in_key else None
+    clean_source = source_code or ""
+    clean_entrypoint = entrypoint.strip() or "evaluate"
+    if implementation_type == "built_in":
+        if not clean_key:
+            raise ValueError("Built-in incentives require a mechanism key.")
+        artifact_id = None
+    else:
+        if not clean_source.strip():
+            raise ValueError("Custom and legacy incentives require Python code.")
+        try:
+            plugin = load_plugin_function(
+                clean_source,
+                clean_entrypoint,
+                plugin_name=f"{clean_name} incentive",
+            )
+            plugin(
+                {
+                    "network": {"parameters": {}},
+                    "device": {
+                        "precision": 1.0,
+                        "execution_cost": 0.1,
+                        "data_rate": 1.0,
+                        "profit_expectation": 0,
+                    },
+                    "device_state": {
+                        "balance": 0,
+                        "feedback_score": 0,
+                        "cumulative_reward": 0,
+                        "cumulative_penalties": 0,
+                        "cumulative_cost": 0,
+                        "data_submissions": 1,
+                    },
+                    "action": {"action_type": "iot_data", "payload": {}},
+                    "network_outcome": {
+                        "status": "confirmed",
+                        "accepted": True,
+                        "metadata": {},
+                    },
+                    "transaction": {
+                        "payload": {},
+                        "submitted_at_ms": 0,
+                    },
+                    "block_height": 0,
+                    "incentive_parameters": dict(parameters or {}),
+                    "elapsed_ms": 0,
+                }
+            )
+        except PluginValidationError:
+            raise
+        except Exception as exc:
+            raise ValueError(f"Incentive plugin validation failed: {exc}") from exc
+
+        current = (
+            get_incentive_editor_data(database, incentive_id)
+            if incentive_id is not None
+            else None
+        )
+        artifact_id = _save_artifact_version(
+            database,
+            artifact_type=(
+                "reward_function"
+                if implementation_type == "legacy_reward"
+                else "incentive_mechanism"
+            ),
+            name=f"{clean_name} incentive",
+            entrypoint=clean_entrypoint,
+            source_code=clean_source,
+            current_artifact_id=(
+                current.get("code_artifact_id") if current else None
+            ),
+        )
+
+    values = {
+        "name": clean_name,
+        "version": version,
+        "description": description.strip() if description else None,
+        "implementation_type": implementation_type,
+        "built_in_key": clean_key,
+        "code_artifact_id": artifact_id,
+        "parameters_json": dict(parameters or {}),
+        "metadata_json": dict(metadata or {}),
+    }
+    if incentive_id is None:
+        return database.create_record(
+            "incentive_mechanism_configs",
+            values,
+        )
+    database.update_records(
+        "incentive_mechanism_configs",
+        values,
+        {"id": incentive_id},
+    )
+    return incentive_id
+
+
+def delete_incentive(
+    database: DatabaseService,
+    incentive_id: int,
+) -> None:
+    """Delete an unused incentive and clean up its orphaned artifact."""
+    incentive = database.get_record(
+        "incentive_mechanism_configs",
+        {"id": incentive_id},
+    )
+    artifact_id = incentive.get("code_artifact_id")
+    database.delete_records(
+        "incentive_mechanism_configs",
+        {"id": incentive_id},
+    )
+    if artifact_id is not None:
+        remaining = database.list_records(
+            "incentive_mechanism_configs",
+            filters={"code_artifact_id": artifact_id},
+            limit=1,
+        )
+        if not remaining:
+            database.delete_records(
+                "code_artifacts",
+                {"id": artifact_id},
+            )
 
 
 def get_experiment_comparison_summary(
