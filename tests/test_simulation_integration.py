@@ -53,7 +53,19 @@ def test_dual_network_simulation_uses_one_event_stream(
         network["status"] for network in stored["networks"]
     } == {"completed"}
     assert stored["run"]["status"] == "completed"
-    assert len(stored["comparison_metrics"]) == 10
+    assert len(stored["comparison_metrics"]) >= 20
+    assert {
+        metric["details_json"]["category"]
+        for metric in stored["comparison_metrics"]
+    } == {
+        "network_performance",
+        "incentive_effectiveness",
+    }
+    assert set(stored["comparison"]["summary_json"]) >= {
+        "network_performance",
+        "incentive_effectiveness",
+        "combined",
+    }
     assert set(stored["network_metrics"]) == {"A", "B"}
     assert progress[0].phase == "preparing"
     assert progress[-1].phase == "completed"

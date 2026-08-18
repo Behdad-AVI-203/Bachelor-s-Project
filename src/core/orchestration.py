@@ -13,6 +13,7 @@ from .behavior import (
     ProfitExpectationBehavior,
 )
 from .blockchain import BlockchainConfig, PoWNetworkModel
+from .evaluation import IncentiveEvaluationAccumulator
 from .errors import SimulationError
 from .incentives import (
     IncentiveContext,
@@ -58,6 +59,7 @@ class SimulationArmRuntime:
         self.useful_contribution_count = 0
         self._total_reward = 0.0
         self._total_penalty = 0.0
+        self.evaluation = IncentiveEvaluationAccumulator()
         self._device_opportunities: dict[int, int] = {}
         self._device_actions: dict[int, int] = {}
 
@@ -94,6 +96,7 @@ class SimulationArmRuntime:
         state = self._get_state(opportunity.sender_device_id)
         device_id = opportunity.sender_device_id
         self.opportunities_seen += 1
+        self.evaluation.record_opportunity(opportunity.event_type)
         self._increment_device_count(self._device_opportunities, device_id)
 
         decision = self.device_behavior.decide_action(
@@ -132,6 +135,7 @@ class SimulationArmRuntime:
         if action.database_id is None:
             action.database_id = opportunity.database_id
         self.actions_created += 1
+        self.evaluation.record_action(action.event_type)
         self._increment_device_count(self._device_actions, device_id)
         return self.process_action(action)
 
@@ -212,8 +216,16 @@ class SimulationArmRuntime:
 
     def metric_record(self, elapsed_ms: int) -> dict[str, Any]:
         record = self.network_model.metric_record(elapsed_ms)
+        self.evaluation.record_active_ratio(
+            int(record["active_device_count"]),
+            len(self.device_states),
+        )
         custom_metrics = dict(record.get("custom_metrics_json") or {})
         custom_metrics.update(self._participation_statistics())
+        if self.incentive_evaluations:
+            custom_metrics.update(
+                self.evaluation.summarize(self.device_states.values())
+            )
         record["custom_metrics_json"] = custom_metrics
         return record
 
@@ -221,6 +233,10 @@ class SimulationArmRuntime:
         record = self.network_model.summary_record()
         custom_summary = dict(record.get("custom_summary_json") or {})
         custom_summary.update(self._participation_statistics())
+        if self.incentive_evaluations:
+            custom_summary.update(
+                self.evaluation.summarize(self.device_states.values())
+            )
         record["custom_summary_json"] = custom_summary
         return record
 
@@ -331,6 +347,10 @@ class SimulationArmRuntime:
         if bool(useful):
             state.useful_contribution_count += 1
             self.useful_contribution_count += 1
+        self.evaluation.record_incentive_outcome(
+            outcome,
+            useful=bool(useful),
+        )
 
     def _incentive_context(
         self,

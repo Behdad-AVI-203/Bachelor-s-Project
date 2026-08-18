@@ -384,6 +384,7 @@ class PoWNetworkModel(NetworkModel):
             "custom_summary_json": {
                 "final_virtual_time_ms": self.current_time_ms,
                 "network_slot": self.config.network_slot,
+                "total_fees": metrics["total_fees"],
             },
         }
 

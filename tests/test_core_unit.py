@@ -32,7 +32,11 @@ from src.core import (
     TransactionStatus,
     TransactionType,
 )
-from src.core.metrics import balance_variance, gini_coefficient
+from src.core.metrics import (
+    balance_variance,
+    gini_coefficient,
+    weighted_score_comparison,
+)
 from src.core.plugins import load_plugin_function
 from src.core.traffic import PoissonEventGenerator, PoissonTrafficConfig
 
@@ -342,6 +346,21 @@ def test_incentive_state_updates_and_metrics_are_persistable():
     assert summary["average_reputation"] == pytest.approx(0.125)
     assert summary["average_contribution"] == pytest.approx(0.5)
     assert summary["useful_contribution_count"] == 1
+    assert summary["final_retention_rate"] == pytest.approx(1.0)
+    assert summary["average_active_device_ratio"] == pytest.approx(1.0)
+    assert summary["opportunity_participation_rate"] == pytest.approx(1.0)
+    assert summary["useful_contribution_rate"] == pytest.approx(1.0)
+    assert summary[
+        "useful_contribution_per_active_device"
+    ] == pytest.approx(0.5)
+    assert summary["total_rewards"] == pytest.approx(2.0)
+    assert summary["total_penalties"] == pytest.approx(0.5)
+    assert summary["net_incentive_cost"] == pytest.approx(1.5)
+    assert summary[
+        "incentive_cost_per_useful_contribution"
+    ] == pytest.approx(1.5)
+    assert summary["reward_distribution_fairness"] == pytest.approx(0.5)
+    assert summary["utility_distribution_fairness"] == pytest.approx(0.5)
 
     state_record = arm.device_state_records(100)[0]["extra_state_json"]
     assert state_record["cumulative_penalties"] == pytest.approx(0.5)
@@ -370,6 +389,34 @@ def test_penalties_and_reputation_influence_future_participation():
 
     assert not decision.active
     assert decision.utility == pytest.approx(-1.1)
+
+
+def test_weighted_comparison_separates_metric_categories():
+    result = weighted_score_comparison(
+        {
+            "network_performance": [
+                {"winner_slot": "B"},
+                {"winner_slot": "B"},
+            ],
+            "incentive_effectiveness": [
+                {"winner_slot": "A"},
+                {"winner_slot": "A"},
+            ],
+        },
+        weights={
+            "network_performance": 0.25,
+            "incentive_effectiveness": 0.75,
+        },
+    )
+
+    assert result["categories"]["network_performance"]["winner_slot"] == "B"
+    assert (
+        result["categories"]["incentive_effectiveness"]["winner_slot"]
+        == "A"
+    )
+    assert result["score_a"] == pytest.approx(0.75)
+    assert result["score_b"] == pytest.approx(0.25)
+    assert result["winner_slot"] == "A"
 
 
 def test_default_behavior_turns_active_opportunity_into_action():

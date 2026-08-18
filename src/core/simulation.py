@@ -16,7 +16,11 @@ from .incentives import (
     RewardIncentiveMechanism,
 )
 from .iot import IoTEnvironmentRuntime
-from .metrics import compare_metric, score_comparison
+from .metrics import (
+    compare_metric,
+    score_comparison,
+    weighted_score_comparison,
+)
 from .models import ExternalOpportunity
 from .orchestration import SimulationArmRuntime
 from .plugins import load_plugin_function
@@ -372,35 +376,7 @@ class SimulationEngine:
     ) -> dict[str, Any]:
         summary_a = summaries["A"]
         summary_b = summaries["B"]
-        metric_specs = [
-            (
-                "active_devices",
-                "Active devices",
-                "final_active_devices",
-                "higher",
-                "devices",
-            ),
-            (
-                "churn_rate",
-                "Churn rate",
-                "final_churn_rate",
-                "lower",
-                "ratio",
-            ),
-            (
-                "gini_coefficient",
-                "Gini coefficient",
-                "final_gini_coefficient",
-                "lower",
-                None,
-            ),
-            (
-                "balance_variance",
-                "Balance variance",
-                "final_balance_variance",
-                "lower",
-                None,
-            ),
+        network_metric_specs = [
             (
                 "confirmed_transactions",
                 "Confirmed transactions",
@@ -430,54 +406,225 @@ class SimulationEngine:
                 "ms",
             ),
             (
-                "total_rewards",
-                "Total device rewards",
-                "total_rewards",
+                "total_blocks",
+                "Total blocks",
+                "total_blocks",
                 "higher",
+                "blocks",
+            ),
+            (
+                "total_fees",
+                "Network fees",
+                "total_fees",
+                "lower",
+                "currency",
+            ),
+        ]
+        incentive_metric_specs = [
+            (
+                "active_devices",
+                "Active devices",
+                "final_active_devices",
+                "higher",
+                "devices",
+            ),
+            (
+                "final_retention_rate",
+                "Final retention rate",
+                "final_retention_rate",
+                "higher",
+                "ratio",
+            ),
+            (
+                "average_active_device_ratio",
+                "Average active-device ratio",
+                "average_active_device_ratio",
+                "higher",
+                "ratio",
+            ),
+            (
+                "opportunity_participation_rate",
+                "Opportunity participation rate",
+                "opportunity_participation_rate",
+                "higher",
+                "ratio",
+            ),
+            (
+                "churn_rate",
+                "Churn rate",
+                "churn_rate",
+                "lower",
+                "ratio",
+            ),
+            (
+                "useful_contribution_count",
+                "Useful contributions",
+                "useful_contribution_count",
+                "higher",
+                "contributions",
+            ),
+            (
+                "useful_contribution_rate",
+                "Useful contribution rate",
+                "useful_contribution_rate",
+                "higher",
+                "ratio",
+            ),
+            (
+                "useful_contribution_per_active_device",
+                "Useful contributions per active device",
+                "useful_contribution_per_active_device",
+                "higher",
+                "contributions/device",
+            ),
+            (
+                "total_rewards",
+                "Total incentive rewards",
+                "total_rewards",
+                "neutral",
                 "currency",
             ),
             (
+                "total_penalties",
+                "Total incentive penalties",
+                "total_penalties",
+                "lower",
+                "currency",
+            ),
+            (
+                "net_incentive_cost",
+                "Net incentive cost",
+                "net_incentive_cost",
+                "lower",
+                "currency",
+            ),
+            (
+                "incentive_cost_per_useful_contribution",
+                "Incentive cost per useful contribution",
+                "incentive_cost_per_useful_contribution",
+                "lower",
+                "currency/contribution",
+            ),
+            (
+                "reward_distribution_fairness",
+                "Reward distribution fairness",
+                "reward_distribution_fairness",
+                "higher",
+                "ratio",
+            ),
+            (
+                "utility_distribution_fairness",
+                "Utility distribution fairness",
+                "utility_distribution_fairness",
+                "higher",
+                "ratio",
+            ),
+            (
+                "gini_coefficient",
+                "Balance Gini coefficient",
+                "final_gini_coefficient",
+                "lower",
+                None,
+            ),
+            (
+                "balance_variance",
+                "Balance variance",
+                "final_balance_variance",
+                "lower",
+                None,
+            ),
+            (
                 "total_costs",
-                "Total device costs",
+                "Total device/network costs",
                 "total_costs",
                 "lower",
                 "currency",
             ),
         ]
-        metrics = []
-        for (
-            metric_name,
-            display_name,
-            summary_key,
-            direction,
-            unit,
-        ) in metric_specs:
-            metric = compare_metric(
-                metric_name=metric_name,
-                display_name=display_name,
-                value_a=summary_a.get(summary_key),
-                value_b=summary_b.get(summary_key),
-                preferred_direction=direction,
-                unit=unit,
-            )
-            metric["simulation_id"] = simulation_id
-            metrics.append(metric)
+        metric_groups = {
+            "network_performance": network_metric_specs,
+            "incentive_effectiveness": incentive_metric_specs,
+        }
+        metrics_by_category: dict[str, list[dict[str, Any]]] = {}
+        for category, specs in metric_groups.items():
+            category_metrics = []
+            for (
+                metric_name,
+                display_name,
+                summary_key,
+                direction,
+                unit,
+            ) in specs:
+                metric = compare_metric(
+                    metric_name=metric_name,
+                    display_name=display_name,
+                    value_a=self._summary_metric_value(
+                        summary_a,
+                        summary_key,
+                    ),
+                    value_b=self._summary_metric_value(
+                        summary_b,
+                        summary_key,
+                    ),
+                    preferred_direction=direction,
+                    unit=unit,
+                )
+                metric["simulation_id"] = simulation_id
+                metric["details_json"] = {"category": category}
+                category_metrics.append(metric)
+            metrics_by_category[category] = category_metrics
 
-        score_a, score_b, winner = score_comparison(metrics)
+        metrics = [
+            metric
+            for category_metrics in metrics_by_category.values()
+            for metric in category_metrics
+        ]
+        legacy_score_a, legacy_score_b, legacy_winner = (
+            score_comparison(metrics)
+        )
+        weighted = weighted_score_comparison(metrics_by_category)
+        category_scores = weighted["categories"]
         comparison = {
             "simulation_id": simulation_id,
-            "score_a": score_a,
-            "score_b": score_b,
-            "winner_slot": winner,
+            "score_a": weighted["score_a"],
+            "score_b": weighted["score_b"],
+            "winner_slot": weighted["winner_slot"],
             "summary_json": {
                 "metric_winners": {
                     metric["metric_name"]: metric["winner_slot"]
                     for metric in metrics
-                }
+                },
+                "network_performance": category_scores.get(
+                    "network_performance",
+                    {},
+                ),
+                "incentive_effectiveness": category_scores.get(
+                    "incentive_effectiveness",
+                    {},
+                ),
+                "combined": weighted,
+                "legacy_unweighted": {
+                    "score_a": legacy_score_a,
+                    "score_b": legacy_score_b,
+                    "winner_slot": legacy_winner,
+                },
             },
         }
         self.database.simulations.save_comparison(comparison, metrics)
         return comparison
+
+    @staticmethod
+    def _summary_metric_value(
+        summary: Mapping[str, Any],
+        key: str,
+    ) -> Any:
+        """Read a standard summary field or its JSON extension."""
+        if key in summary:
+            return summary[key]
+        custom_summary = summary.get("custom_summary_json")
+        if isinstance(custom_summary, Mapping):
+            return custom_summary.get(key)
+        return None
 
     def _build_network_model(
         self,

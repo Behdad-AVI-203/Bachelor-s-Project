@@ -23,6 +23,7 @@ from .errors import (
     PluginValidationError,
     SimulationError,
 )
+from .evaluation import IncentiveEvaluationAccumulator
 from .incentives import (
     IncentiveContext,
     IncentiveMechanism,
@@ -66,6 +67,7 @@ __all__ = [
     "DeviceProfile",
     "EnvironmentError",
     "ExternalOpportunity",
+    "IncentiveEvaluationAccumulator",
     "IncentiveContext",
     "IncentiveError",
     "IncentiveMechanism",

@@ -6,6 +6,11 @@ from collections.abc import Iterable, Mapping
 from statistics import fmean, pvariance
 from typing import Any
 
+DEFAULT_COMPARISON_WEIGHTS = {
+    "network_performance": 0.25,
+    "incentive_effectiveness": 0.75,
+}
+
 
 def gini_coefficient(values: Iterable[float]) -> float:
     """Calculate a non-negative Gini coefficient."""
@@ -102,3 +107,59 @@ def score_comparison(
     else:
         winner = "A" if score_a > score_b else "B"
     return score_a, score_b, winner
+
+
+def weighted_score_comparison(
+    metrics_by_category: Mapping[str, Iterable[Mapping[str, Any]]],
+    *,
+    weights: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
+    """Score category-normalized metric wins with configurable weights."""
+    configured_weights = dict(weights or DEFAULT_COMPARISON_WEIGHTS)
+    category_scores: dict[str, dict[str, Any]] = {}
+    total_weight = 0.0
+    combined_a = 0.0
+    combined_b = 0.0
+
+    for category, category_metrics in metrics_by_category.items():
+        prepared = list(category_metrics)
+        if not prepared:
+            continue
+        weight = max(0.0, float(configured_weights.get(category, 0.0)))
+        if weight == 0:
+            continue
+        raw_a, raw_b, raw_winner = score_comparison(prepared)
+        scored_count = sum(
+            metric.get("winner_slot") in {"A", "B", "TIE"}
+            for metric in prepared
+        )
+        if scored_count == 0:
+            continue
+        normalized_a = raw_a / scored_count
+        normalized_b = raw_b / scored_count
+        category_scores[category] = {
+            "score_a": normalized_a,
+            "score_b": normalized_b,
+            "winner_slot": raw_winner,
+            "metric_count": scored_count,
+            "weight": weight,
+        }
+        total_weight += weight
+        combined_a += weight * normalized_a
+        combined_b += weight * normalized_b
+
+    if total_weight:
+        combined_a /= total_weight
+        combined_b /= total_weight
+    if abs(combined_a - combined_b) < 1e-12:
+        winner = "TIE"
+    else:
+        winner = "A" if combined_a > combined_b else "B"
+
+    return {
+        "score_a": combined_a,
+        "score_b": combined_b,
+        "winner_slot": winner,
+        "weights": configured_weights,
+        "categories": category_scores,
+    }
