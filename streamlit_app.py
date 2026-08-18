@@ -50,6 +50,11 @@ pages = [
         icon=":material/tune:",
     ),
     st.Page(
+        "app_pages/experiments.py",
+        title="Experiments",
+        icon=":material/science:",
+    ),
+    st.Page(
         "app_pages/run_simulation.py",
         title="Run simulation",
         icon=":material/play_circle:",

@@ -346,6 +346,180 @@ def delete_incentive(
             )
 
 
+def list_experiments(database: DatabaseService) -> list[dict[str, Any]]:
+    """Return a comparison-aware list of saved experiments."""
+    return database.store.execute_query(
+        """
+        SELECT
+            experiment.id,
+            experiment.name,
+            experiment.description,
+            experiment.comparison_model,
+            experiment.environment_id,
+            environment.name AS environment_name,
+            experiment.network_config_id,
+            network.name AS network_name,
+            experiment.incentive_a_config_id,
+            incentive_a.name AS incentive_a_name,
+            experiment.incentive_b_config_id,
+            incentive_b.name AS incentive_b_name,
+            experiment.network_a_config_id,
+            legacy_a.name AS network_a_name,
+            experiment.network_b_config_id,
+            legacy_b.name AS network_b_name,
+            experiment.poisson_lambda,
+            experiment.duration_seconds,
+            experiment.sample_interval_ms,
+            experiment.default_random_seed,
+            experiment.traffic_mix_json,
+            experiment.parameters_json,
+            experiment.created_at,
+            experiment.updated_at
+        FROM experiment_configs AS experiment
+        JOIN iot_environments AS environment
+            ON environment.id = experiment.environment_id
+        LEFT JOIN blockchain_network_configs AS network
+            ON network.id = experiment.network_config_id
+        LEFT JOIN incentive_mechanism_configs AS incentive_a
+            ON incentive_a.id = experiment.incentive_a_config_id
+        LEFT JOIN incentive_mechanism_configs AS incentive_b
+            ON incentive_b.id = experiment.incentive_b_config_id
+        LEFT JOIN blockchain_network_configs AS legacy_a
+            ON legacy_a.id = experiment.network_a_config_id
+        LEFT JOIN blockchain_network_configs AS legacy_b
+            ON legacy_b.id = experiment.network_b_config_id
+        ORDER BY experiment.updated_at DESC, experiment.id DESC
+        """
+    )
+
+
+def get_experiment_editor_data(
+    database: DatabaseService,
+    experiment_id: int,
+) -> dict[str, Any]:
+    """Load one experiment and its referenced configuration details."""
+    experiment = database.configurations.get_experiment_config(experiment_id)
+    if experiment.get("comparison_model") != "incentive_mechanisms":
+        return experiment
+    return experiment
+
+
+def save_experiment(
+    database: DatabaseService,
+    *,
+    name: str,
+    description: str | None,
+    environment_id: int | None,
+    network_id: int | None,
+    incentive_a_id: int | None,
+    incentive_b_id: int | None,
+    poisson_lambda: float,
+    duration_seconds: float,
+    sample_interval_ms: int,
+    random_seed: int | None,
+    traffic_mix: Mapping[str, Any] | None,
+    parameters: Mapping[str, Any] | None,
+    experiment_id: int | None = None,
+) -> int:
+    """Create or update a new incentive-comparison experiment."""
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("Experiment name is required.")
+    current = None
+    if experiment_id is not None:
+        current = database.configurations.get_experiment_config(experiment_id)
+        if current.get("comparison_model") != "incentive_mechanisms":
+            raise ValueError("Legacy experiments are read-only in this editor.")
+    if environment_id is None:
+        raise ValueError("An IoT environment must be selected.")
+    if network_id is None:
+        raise ValueError("A shared network model must be selected.")
+    if incentive_a_id is None or incentive_b_id is None:
+        raise ValueError("Both incentive mechanisms must be selected.")
+    if poisson_lambda <= 0:
+        raise ValueError("Poisson λ must be greater than zero.")
+    if duration_seconds <= 0:
+        raise ValueError("Simulation duration must be greater than zero.")
+    if sample_interval_ms <= 0:
+        raise ValueError("Sample interval must be greater than zero.")
+
+    environment = database.get_record(
+        "iot_environments",
+        {"id": environment_id},
+    )
+    network = database.get_record(
+        "blockchain_network_configs",
+        {"id": network_id},
+    )
+    incentive_a = database.get_record(
+        "incentive_mechanism_configs",
+        {"id": incentive_a_id},
+    )
+    incentive_b = database.get_record(
+        "incentive_mechanism_configs",
+        {"id": incentive_b_id},
+    )
+    if not all((environment, network, incentive_a, incentive_b)):
+        raise ValueError(
+            "The selected environment, network, and incentives must exist."
+        )
+
+    values = {
+        "name": clean_name,
+        "description": description.strip() if description else None,
+        "environment_id": environment_id,
+        "comparison_model": "incentive_mechanisms",
+        "network_a_config_id": None,
+        "network_b_config_id": None,
+        "network_config_id": network_id,
+        "incentive_a_config_id": incentive_a_id,
+        "incentive_b_config_id": incentive_b_id,
+        "poisson_lambda": float(poisson_lambda),
+        "duration_seconds": float(duration_seconds),
+        "sample_interval_ms": int(sample_interval_ms),
+        "default_random_seed": random_seed,
+        "traffic_mix_json": dict(traffic_mix or {}),
+        "parameters_json": dict(parameters or {}),
+    }
+    if experiment_id is None:
+        return database.create_record("experiment_configs", values)
+
+    values["updated_at"] = _utc_now()
+    database.update_records(
+        "experiment_configs",
+        values,
+        {"id": experiment_id},
+    )
+    return experiment_id
+
+
+def clone_experiment(
+    database: DatabaseService,
+    experiment_id: int,
+    *,
+    name: str,
+) -> int:
+    """Clone a new incentive-comparison experiment for reproducible studies."""
+    source = database.configurations.get_experiment_config(experiment_id)
+    if source.get("comparison_model") != "incentive_mechanisms":
+        raise ValueError("Only incentive-comparison experiments can be cloned.")
+    return save_experiment(
+        database,
+        name=name,
+        description=source.get("description"),
+        environment_id=source["environment_id"],
+        network_id=source["network_config_id"],
+        incentive_a_id=source["incentive_a_config_id"],
+        incentive_b_id=source["incentive_b_config_id"],
+        poisson_lambda=float(source["poisson_lambda"]),
+        duration_seconds=float(source["duration_seconds"]),
+        sample_interval_ms=int(source["sample_interval_ms"]),
+        random_seed=source.get("default_random_seed"),
+        traffic_mix=source.get("traffic_mix_json") or {},
+        parameters=source.get("parameters_json") or {},
+    )
+
+
 def get_experiment_comparison_summary(
     database: DatabaseService,
     experiment_id: int,
