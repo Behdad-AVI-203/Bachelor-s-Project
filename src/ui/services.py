@@ -18,6 +18,12 @@ from src.core.plugins import load_plugin_function
 from src.database import Database, DatabaseService, RecordNotFoundError
 
 from .config import DATABASE_PATH
+from .read_models import (
+    ComparisonSummary,
+    comparison_summary_from_experiment,
+    comparison_summary_from_history_row,
+    comparison_summary_from_results,
+)
 
 DEFAULT_REWARD_CODE = """def calculate_reward(context):
     device = context["device"]
@@ -90,6 +96,87 @@ def get_database() -> DatabaseService:
     database = Database(DATABASE_PATH)
     database.initialize()
     return database
+
+
+def get_experiment_comparison_summary(
+    database: DatabaseService,
+    experiment_id: int,
+) -> ComparisonSummary:
+    """Return the display summary for one saved experiment."""
+    experiment = database.configurations.get_experiment_config(experiment_id)
+    return comparison_summary_from_experiment(experiment)
+
+
+def get_simulation_comparison_summary(
+    database: DatabaseService,
+    simulation_id: int,
+) -> ComparisonSummary:
+    """Return the display summary for one immutable simulation run."""
+    results = database.simulations.get_simulation_results(
+        simulation_id,
+        include_time_series=False,
+        transaction_limit=1,
+    )
+    return comparison_summary_from_results(results)
+
+
+def get_simulation_results_view(
+    database: DatabaseService,
+    simulation_id: int,
+    *,
+    include_time_series: bool = True,
+    transaction_limit: int = 250,
+) -> dict[str, Any]:
+    """Return results with comparison-aware, UI-safe arm terminology."""
+    results = database.simulations.get_simulation_results(
+        simulation_id,
+        include_time_series=include_time_series,
+        transaction_limit=transaction_limit,
+    )
+    summary = comparison_summary_from_results(results)
+    view = dict(results)
+    view["experiment_summary"] = summary.to_dict()
+    view["arms"] = view.pop("networks", [])
+    return view
+
+
+def get_simulation_history_view(
+    database: DatabaseService,
+    *,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Return history rows enriched with unified comparison summaries."""
+    history = database.simulations.get_simulation_history(
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    items = []
+    for row in history["items"]:
+        try:
+            summary = get_simulation_comparison_summary(
+                database,
+                int(row["id"]),
+            )
+        except Exception:
+            summary = comparison_summary_from_history_row(row)
+        enriched = dict(row)
+        enriched["experiment_summary"] = summary.to_dict()
+        enriched.update(
+            {
+                "comparison_model": summary.comparison_model,
+                "is_legacy": summary.is_legacy,
+                "shared_network_name": summary.shared_network_name,
+                "incentive_a_name": summary.incentive_a_name,
+                "incentive_b_name": summary.incentive_b_name,
+                "arm_a_name": summary.arm_a_name,
+                "arm_b_name": summary.arm_b_name,
+            }
+        )
+        items.append(enriched)
+    return {"total": history["total"], "items": items}
 
 
 def list_environments(database: DatabaseService) -> list[dict[str, Any]]:
