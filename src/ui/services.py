@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Mapping
 from typing import Any
 
@@ -599,6 +599,209 @@ def get_simulation_history_view(
         )
         items.append(enriched)
     return {"total": history["total"], "items": items}
+
+
+def get_dashboard_view(database: DatabaseService) -> dict[str, Any]:
+    """Return comparison-aware aggregates for the dashboard page."""
+    first_page = database.simulations.get_simulation_history(limit=1)
+    total = int(first_page["total"])
+    history = (
+        get_simulation_history_view(
+            database,
+            limit=max(total, 1),
+        )
+        if total
+        else {"total": 0, "items": []}
+    )
+    rows = list(history["items"])
+    completed = [row for row in rows if row["status"] == "completed"]
+    incentive_rows = [
+        row for row in rows if not bool(row.get("is_legacy"))
+    ]
+    legacy_rows = [row for row in rows if bool(row.get("is_legacy"))]
+    completed_incentive_rows = [
+        row for row in completed if not bool(row.get("is_legacy"))
+    ]
+    completed_legacy_rows = [
+        row for row in completed if bool(row.get("is_legacy"))
+    ]
+
+    incentive_results: list[dict[str, Any]] = []
+    for row in completed_incentive_rows:
+        try:
+            result = get_simulation_results_view(
+                database,
+                int(row["id"]),
+                include_time_series=False,
+                transaction_limit=1,
+            )
+        except Exception:
+            continue
+        summary = result["experiment_summary"]
+        arms = {
+            arm["network_slot"]: arm
+            for arm in result.get("arms", [])
+        }
+        arm_metrics = {}
+        for slot, arm in arms.items():
+            custom = arm.get("custom_summary_json") or {}
+            if isinstance(custom, str):
+                try:
+                    custom = json.loads(custom)
+                except json.JSONDecodeError:
+                    custom = {}
+            if not isinstance(custom, Mapping):
+                custom = {}
+            churn = arm.get("final_churn_rate")
+            retention = custom.get("final_retention_rate")
+            if retention is None and churn is not None:
+                retention = 1.0 - float(churn)
+            arm_metrics[slot] = {
+                "retention_rate": retention,
+                "participation_rate": custom.get(
+                    "opportunity_participation_rate"
+                ),
+                "useful_contribution_count": custom.get(
+                    "useful_contribution_count"
+                ),
+                "net_incentive_cost": custom.get("net_incentive_cost"),
+                "cost_per_useful_contribution": custom.get(
+                    "incentive_cost_per_useful_contribution"
+                ),
+            }
+        comparison = result.get("comparison") or {}
+        comparison_summary = comparison.get("summary_json") or {}
+        incentive_category = comparison_summary.get(
+            "incentive_effectiveness"
+        ) or {}
+        incentive_winner = incentive_category.get(
+            "winner_slot",
+            comparison.get("winner_slot"),
+        )
+        incentive_results.append(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "summary": summary,
+                "winner_slot": incentive_winner,
+                "arms": arm_metrics,
+            }
+        )
+
+    def _mean_metric(metric: str) -> float | None:
+        values = [
+            float(value)
+            for result in incentive_results
+            for arm in result["arms"].values()
+            for value in [arm.get(metric)]
+            if value is not None
+        ]
+        return sum(values) / len(values) if values else None
+
+    useful_values = [
+        float(arm["useful_contribution_count"])
+        for result in incentive_results
+        for arm in result["arms"].values()
+        if arm.get("useful_contribution_count") is not None
+    ]
+    incentive_wins: Counter[str] = Counter()
+    for result in incentive_results:
+        winner = result["winner_slot"]
+        if winner in {"A", "B"}:
+            winner_name = result["summary"].get(
+                "incentive_a_name"
+                if winner == "A"
+                else "incentive_b_name"
+            )
+            if winner_name:
+                incentive_wins[str(winner_name)] += 1
+
+    legacy_wins: Counter[str] = Counter()
+    for row in completed_legacy_rows:
+        winner = row.get("winner_slot")
+        winner_name = (
+            row.get("network_a_name")
+            if winner == "A"
+            else row.get("network_b_name")
+            if winner == "B"
+            else None
+        )
+        if winner_name:
+            legacy_wins[str(winner_name)] += 1
+
+    return {
+        "history": rows,
+        "environments": list_environments(database),
+        "networks": list_networks(database),
+        "incentives": list_incentives(database),
+        "completed": completed,
+        "incentive_runs": incentive_rows,
+        "legacy_runs": legacy_rows,
+        "incentive_results": incentive_results,
+        "latest": rows[0] if rows else None,
+        "incentive_summary": {
+            "run_count": len(incentive_rows),
+            "completed_count": len(incentive_results),
+            "best_incentive": (
+                incentive_wins.most_common(1)[0][0]
+                if incentive_wins
+                else "Not available"
+            ),
+            "wins": dict(incentive_wins),
+            "average_retention_rate": _mean_metric("retention_rate"),
+            "average_participation_rate": _mean_metric(
+                "participation_rate"
+            ),
+            "useful_contribution_count": sum(useful_values),
+            "average_useful_contribution_count": (
+                sum(useful_values) / len(useful_values)
+                if useful_values
+                else None
+            ),
+            "average_cost_per_useful_contribution": _mean_metric(
+                "cost_per_useful_contribution"
+            ),
+        },
+        "legacy_summary": {
+            "run_count": len(legacy_rows),
+            "completed_count": len(completed_legacy_rows),
+            "best_network": (
+                legacy_wins.most_common(1)[0][0]
+                if legacy_wins
+                else "Not available"
+            ),
+            "wins": dict(legacy_wins),
+            "average_churn_rate": (
+                sum(
+                    float(value)
+                    for row in completed_legacy_rows
+                    for value in (
+                        row.get("network_a_churn_rate"),
+                        row.get("network_b_churn_rate"),
+                    )
+                    if value is not None
+                )
+                / sum(
+                    1
+                    for row in completed_legacy_rows
+                    for value in (
+                        row.get("network_a_churn_rate"),
+                        row.get("network_b_churn_rate"),
+                    )
+                    if value is not None
+                )
+                if any(
+                    value is not None
+                    for row in completed_legacy_rows
+                    for value in (
+                        row.get("network_a_churn_rate"),
+                        row.get("network_b_churn_rate"),
+                    )
+                )
+                else None
+            ),
+        },
+    }
 
 
 def list_environments(database: DatabaseService) -> list[dict[str, Any]]:

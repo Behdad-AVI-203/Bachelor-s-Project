@@ -241,6 +241,22 @@ def test_complete_ui_research_workflow(tmp_path):
     assert csv_bytes.startswith(b"\xef\xbb\xbf")
     assert pdf_bytes.startswith(b"%PDF-1.4")
 
+    dashboard_page = _page_app(
+        "app_pages/dashboard.py",
+        database_path,
+    )
+    _assert_no_exceptions(dashboard_page)
+    assert {
+        subheader.value for subheader in dashboard_page.subheader
+    } >= {
+        "Incentive effectiveness",
+        "Recent incentive experiments",
+    }
+    assert any(
+        "Incentive A" in dataframe.value.columns
+        for dataframe in dashboard_page.dataframe
+    )
+
     history_page = _page_app(
         "app_pages/history.py",
         database_path,

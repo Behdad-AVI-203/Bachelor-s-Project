@@ -8,6 +8,9 @@ from src.ui.read_models import (
     comparison_summary_from_results,
 )
 from src.ui.services import get_experiment_comparison_summary
+from src.ui.services import get_dashboard_view
+
+from src.core import SimulationEngine
 
 
 def test_incentive_experiment_summary_uses_shared_network_and_incentives():
@@ -114,3 +117,58 @@ def test_database_backed_experiment_summary_uses_configuration_repository(
     assert summary.shared_network_name == "Network A"
     assert summary.incentive_a_name == "Built-in A"
     assert summary.incentive_b_name == "Built-in B"
+
+
+def test_dashboard_view_separates_incentive_and_legacy_runs(
+    configured_database,
+):
+    database, identifiers = configured_database
+    legacy_result = SimulationEngine(database).run_experiment(
+        identifiers["experiment_id"],
+        random_seed=42,
+    )
+
+    incentive_a_id = database.configurations.create_incentive_config(
+        name="Dashboard incentive A",
+        version=1,
+        implementation_type="built_in",
+        built_in_key="default_reward",
+    )
+    incentive_b_id = database.configurations.create_incentive_config(
+        name="Dashboard incentive B",
+        version=1,
+        implementation_type="built_in",
+        built_in_key="default_reward",
+    )
+    incentive_experiment_id = (
+        database.configurations.create_experiment_config(
+            name="Dashboard incentive experiment",
+            environment_id=identifiers["environment_id"],
+            network_config_id=identifiers["network_a_id"],
+            incentive_a_config_id=incentive_a_id,
+            incentive_b_config_id=incentive_b_id,
+            poisson_lambda=1.0,
+            duration_seconds=2.0,
+            sample_interval_ms=1_000,
+            default_random_seed=42,
+            traffic_mix={"iot_data": 1.0},
+        )
+    )
+    incentive_result = SimulationEngine(database).run_experiment(
+        incentive_experiment_id,
+        random_seed=42,
+    )
+
+    dashboard = get_dashboard_view(database)
+
+    assert [row["id"] for row in dashboard["legacy_runs"]] == [
+        legacy_result.simulation_id
+    ]
+    assert [row["id"] for row in dashboard["incentive_runs"]] == [
+        incentive_result.simulation_id
+    ]
+    assert dashboard["incentive_summary"]["run_count"] == 1
+    assert dashboard["legacy_summary"]["run_count"] == 1
+    assert dashboard["incentive_summary"]["best_incentive"] != (
+        dashboard["legacy_summary"]["best_network"]
+    )
