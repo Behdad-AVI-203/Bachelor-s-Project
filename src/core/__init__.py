@@ -46,7 +46,7 @@ from .models import (
     TransactionStatus,
     TransactionType,
 )
-from .network import NetworkModel, NetworkOutcome
+from .network import NetworkModel, NetworkModelFactory, NetworkOutcome
 from .orchestration import SimulationArmRuntime
 from .simulation import (
     SimulationEngine,
@@ -76,6 +76,7 @@ __all__ = [
     "IoTEnvironmentRuntime",
     "NetworkDeviceState",
     "NetworkModel",
+    "NetworkModelFactory",
     "NetworkOutcome",
     "NonParticipationRecord",
     "ParticipationContext",

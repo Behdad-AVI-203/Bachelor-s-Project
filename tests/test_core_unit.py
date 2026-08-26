@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import random
 
 import pytest
@@ -19,6 +20,7 @@ from src.core import (
     IncentiveOutcome,
     IoTEnvironmentRuntime,
     NetworkModel,
+    NetworkDeviceState,
     NetworkOutcome,
     ParticipationContext,
     PluginIncentiveMechanism,
@@ -39,6 +41,109 @@ from src.core.metrics import (
 )
 from src.core.plugins import load_plugin_function
 from src.core.traffic import PoissonEventGenerator, PoissonTrafficConfig
+import src.core.orchestration as orchestration_module
+
+
+class MockNetworkModel:
+    """Minimal non-PoW implementation used to exercise orchestration."""
+
+    current_time_ms = 0
+    simulation_network_id = 99
+    legacy_reward_compatibility = False
+
+    def __init__(self, environment):
+        self.device_states = {
+            device.database_id: NetworkDeviceState(
+                profile=device,
+                balance=device.initial_balance,
+            )
+            for device in environment.devices
+        }
+        self._outcomes = []
+        self.rewards = {}
+
+    def process_action(self, action):
+        outcome = NetworkOutcome(
+            action_id=action.database_id,
+            status=TransactionStatus.CONFIRMED.value,
+            accepted=True,
+            submitted_at_ms=action.scheduled_at_ms,
+            finalized_at_ms=action.scheduled_at_ms,
+            metadata={"mock": True},
+        )
+        self._outcomes.append(outcome)
+        return outcome
+
+    def advance_to(self, elapsed_ms):
+        self.current_time_ms = max(self.current_time_ms, elapsed_ms)
+
+    def finalize(self, elapsed_ms):
+        self.advance_to(elapsed_ms)
+        return self.current_time_ms
+
+    def drain_outcomes(self):
+        outcomes, self._outcomes = self._outcomes, []
+        return outcomes
+
+    def network_context(self):
+        return {"name": "Mock network", "parameters": {}}
+
+    def action_context_for_outcome(self, outcome):
+        return {
+            "action_type": TransactionType.IOT_DATA.value,
+            "sender_device_id": 1,
+            "target_device_id": None,
+            "amount": 0,
+            "payload": {"value": 20.0},
+            "submitted_at_ms": outcome.submitted_at_ms,
+        }
+
+    def record_incentive_effect(self, outcome, reward):
+        self.rewards[outcome.action_id] = reward
+
+    def device_state_records(self, elapsed_ms):
+        return [
+            {
+                "simulation_network_id": self.simulation_network_id,
+                "simulation_device_id": state.profile.database_id,
+                "elapsed_ms": elapsed_ms,
+                "balance": state.balance,
+                "cumulative_reward": state.cumulative_reward,
+                "cumulative_cost": state.cumulative_cost,
+                "cumulative_profit": state.cumulative_profit,
+                "feedback_score": state.feedback_score,
+                "submitted_transactions": state.submitted_transactions,
+                "confirmed_transactions": state.confirmed_transactions,
+                "rejected_transactions": state.rejected_transactions,
+                "is_active": state.active,
+                "churn_reason": state.churn_reason,
+                "extra_state_json": {},
+            }
+            for state in self.device_states.values()
+        ]
+
+    def metric_record(self, elapsed_ms):
+        active = sum(state.active for state in self.device_states.values())
+        return {
+            "simulation_network_id": self.simulation_network_id,
+            "elapsed_ms": elapsed_ms,
+            "active_device_count": active,
+            "custom_metrics_json": {},
+        }
+
+    def summary_record(self):
+        active = sum(state.active for state in self.device_states.values())
+        return {
+            "simulation_network_id": self.simulation_network_id,
+            "final_active_devices": active,
+            "custom_summary_json": {},
+        }
+
+    def persistence_records(self, reference_ids=None):
+        return [], []
+
+    def compatibility_view(self, view_name):
+        return []
 
 
 def _runtime(
@@ -629,6 +734,39 @@ def test_pow_model_emits_outcomes_without_applying_external_policies():
     assert transaction.reward == 0
     assert model.device_states[1].cumulative_reward == 0
     assert [outcome.status for outcome in outcomes] == ["confirmed"]
+
+
+def test_simulation_arm_runs_with_generic_non_pow_network():
+    runtime = _runtime(device_count=1, execution_cost=0.0)
+    assert isinstance(MockNetworkModel(runtime), NetworkModel)
+    arm = SimulationArmRuntime(
+        network_model=MockNetworkModel(runtime),
+        incentive_mechanism=RewardIncentiveMechanism(
+            lambda context: 2.0
+        ),
+    )
+
+    outcome = arm.process_opportunity(
+        ExternalOpportunity(
+            sequence_number=0,
+            scheduled_at_ms=100,
+            event_type=TransactionType.IOT_DATA,
+            sender_device_id=1,
+            target_device_id=None,
+            payload={"value": 20.0},
+            database_id=7,
+        )
+    )
+
+    assert outcome is not None
+    assert arm.device_states[1].cumulative_reward == pytest.approx(2.0)
+    assert arm.network_model.rewards[7] == pytest.approx(2.0)
+
+
+def test_orchestration_has_no_pow_type_imports():
+    source = inspect.getsource(orchestration_module)
+    assert "PoWNetworkModel" not in source
+    assert "BlockchainConfig" not in source
 
 
 def test_reward_incentive_mechanism_uses_generic_context():

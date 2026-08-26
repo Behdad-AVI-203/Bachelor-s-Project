@@ -12,9 +12,7 @@ from .behavior import (
     ParticipationContext,
     ProfitExpectationBehavior,
 )
-from .blockchain import BlockchainConfig, PoWNetworkModel
 from .evaluation import IncentiveEvaluationAccumulator
-from .errors import SimulationError
 from .incentives import (
     IncentiveContext,
     IncentiveMechanism,
@@ -24,14 +22,12 @@ from .incentives import (
 from .models import (
     DeviceAction,
     ExternalOpportunity,
-    NetworkDeviceState,
-    NetworkTransaction,
     NonParticipationRecord,
     SimulationEvent,
     TransactionStatus,
     TransactionType,
 )
-from .network import NetworkOutcome
+from .network import NetworkModel, NetworkOutcome
 
 
 class SimulationArmRuntime:
@@ -40,7 +36,7 @@ class SimulationArmRuntime:
     def __init__(
         self,
         *,
-        network_model: PoWNetworkModel,
+        network_model: NetworkModel,
         incentive_mechanism: IncentiveMechanism | None = None,
         device_behavior: DeviceBehavior | None = None,
         random_seed: int = 0,
@@ -72,20 +68,27 @@ class SimulationArmRuntime:
         return self.network_model.current_time_ms
 
     @property
-    def config(self) -> BlockchainConfig:
-        return self.network_model.config
-
-    @property
-    def device_states(self) -> dict[int, NetworkDeviceState]:
+    def device_states(self) -> Mapping[int, Any]:
         return self.network_model.device_states
 
-    @property
-    def transactions(self) -> list[NetworkTransaction]:
-        return self.network_model.transactions
+    def network_context(self) -> Mapping[str, Any]:
+        return self.network_model.network_context()
 
     @property
-    def blocks(self):
-        return self.network_model.blocks
+    def transactions(self) -> list[Any]:
+        """Legacy compatibility view for callers during migration."""
+        view = getattr(self.network_model, "compatibility_view", None)
+        return list(view("ledger")) if view is not None else []
+
+    @property
+    def blocks(self) -> list[Any]:
+        """Legacy compatibility view for callers during migration."""
+        view = getattr(self.network_model, "compatibility_view", None)
+        return (
+            list(view("consensus_history"))
+            if view is not None
+            else []
+        )
 
     def process_opportunity(
         self,
@@ -143,18 +146,16 @@ class SimulationArmRuntime:
         """Run one action through network, incentive, and behavior stages."""
         self.advance_to(action.scheduled_at_ms)
         outcome = self.network_model.process_action(action)
-        transaction = self._transaction_for_outcome(outcome)
         terminal_outcomes = self.network_model.drain_outcomes()
         submission_outcome = next(
             (
                 terminal
                 for terminal in terminal_outcomes
-                if self._transaction_hash(terminal)
-                == transaction.transaction_hash
+                if terminal.action_id == outcome.action_id
             ),
             outcome,
         )
-        self._apply_submission_state(transaction, submission_outcome)
+        self._apply_submission_state(outcome, submission_outcome)
         self._apply_terminal_outcomes(terminal_outcomes)
         return outcome
 
@@ -177,9 +178,13 @@ class SimulationArmRuntime:
         ).digest()
         return int.from_bytes(digest[:8], "big") / 2**64
 
-    def process_event(self, event: SimulationEvent) -> NetworkTransaction:
-        """Compatibility API returning the concrete PoW transaction."""
-        return self._transaction_for_outcome(self.process_action(event))
+    def process_event(self, event: SimulationEvent) -> Any:
+        """Compatibility API returning a network-specific action record."""
+        outcome = self.process_action(event)
+        adapter = getattr(self.network_model, "compatibility_action", None)
+        if adapter is None:
+            return outcome
+        return adapter(outcome)
 
     def advance_to(self, elapsed_ms: int) -> None:
         """Advance network time, then apply completed external policies."""
@@ -259,33 +264,32 @@ class SimulationArmRuntime:
         record["custom_summary_json"] = custom_summary
         return record
 
-    def block_records(self) -> list[dict[str, Any]]:
-        return self.network_model.block_records()
-
-    def transaction_records(
+    def persistence_records(
         self,
-        block_ids_by_height: Mapping[int, int],
-    ) -> list[dict[str, Any]]:
-        return self.network_model.transaction_records(block_ids_by_height)
+        reference_ids: Mapping[int, int] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        return self.network_model.persistence_records(reference_ids)
 
     def _apply_submission_state(
         self,
-        transaction: NetworkTransaction,
         outcome: NetworkOutcome,
+        submitted_outcome: NetworkOutcome,
     ) -> None:
-        state = self._get_state(transaction.sender_device_id)
+        action = self.network_model.action_context_for_outcome(outcome)
+        sender_device_id = action.get("sender_device_id")
+        state = self._get_state(sender_device_id)
         if state is None:
             return
         state.submitted_transactions += 1
-        if outcome.status == TransactionStatus.REJECTED.value:
+        if submitted_outcome.status == TransactionStatus.REJECTED.value:
             state.rejected_transactions += 1
 
         data_cost_charged = bool(
-            outcome.metadata.get("data_cost_charged")
+            submitted_outcome.metadata.get("data_cost_charged")
         )
         if (
-            transaction.transaction_type == TransactionType.IOT_DATA
-            and (outcome.accepted or data_cost_charged)
+            action.get("action_type") == TransactionType.IOT_DATA.value
+            and (submitted_outcome.accepted or data_cost_charged)
         ):
             state.data_submissions += 1
             state.cumulative_cost += state.profile.execution_cost
@@ -295,33 +299,34 @@ class SimulationArmRuntime:
         outcomes: list[NetworkOutcome],
     ) -> None:
         for outcome in outcomes:
-            transaction = self._transaction_for_outcome(outcome)
-            state = self._get_state(transaction.sender_device_id)
+            action = self.network_model.action_context_for_outcome(outcome)
+            sender_device_id = action.get("sender_device_id")
+            state = self._get_state(sender_device_id)
             if state is None:
                 continue
 
             if outcome.status == TransactionStatus.CONFIRMED.value:
                 state.confirmed_transactions += 1
 
-            if transaction.transaction_type != TransactionType.IOT_DATA:
+            if action.get("action_type") != TransactionType.IOT_DATA.value:
                 continue
 
             incentive_outcome = None
             if outcome.status == TransactionStatus.CONFIRMED.value:
                 incentive_outcome = self.incentive_mechanism.evaluate(
                     self._incentive_context(
-                        transaction,
+                        action,
                         state,
                         outcome,
                     )
                 )
                 self._apply_incentive_outcome(
-                    transaction,
+                    outcome,
                     state,
                     incentive_outcome,
                 )
                 self.last_incentive_outcomes[
-                    state.profile.database_id
+                    int(sender_device_id)
                 ] = incentive_outcome
 
             if (
@@ -329,7 +334,7 @@ class SimulationArmRuntime:
                 or bool(outcome.metadata.get("data_cost_charged"))
             ):
                 self._update_participation(
-                    transaction,
+                    action,
                     state,
                     outcome,
                     incentive_outcome,
@@ -337,64 +342,64 @@ class SimulationArmRuntime:
 
     def _apply_incentive_outcome(
         self,
-        transaction: NetworkTransaction,
-        state: NetworkDeviceState,
-        outcome: IncentiveOutcome,
+        outcome: NetworkOutcome,
+        state: Any,
+        incentive_outcome: IncentiveOutcome,
     ) -> None:
         """Apply incentive effects to runtime state outside the network model."""
-        reward_delta = outcome.reward_delta
-        penalty_delta = outcome.penalty_delta
-        contribution_delta = outcome.contribution_delta
+        reward_delta = incentive_outcome.reward_delta
+        penalty_delta = incentive_outcome.penalty_delta
+        contribution_delta = incentive_outcome.contribution_delta
 
-        transaction.reward = reward_delta
+        self.network_model.record_incentive_effect(outcome, reward_delta)
         state.balance += reward_delta - penalty_delta
         state.cumulative_reward += reward_delta
         state.cumulative_penalties += penalty_delta
-        state.reputation_score += outcome.reputation_delta
+        state.reputation_score += incentive_outcome.reputation_delta
         state.contribution_score += contribution_delta
-        state.last_participation_signal = outcome.participation_signal
+        state.last_participation_signal = (
+            incentive_outcome.participation_signal
+        )
 
         self.incentive_evaluations += 1
         self._total_reward += reward_delta
         self._total_penalty += penalty_delta
 
-        useful = outcome.details.get("useful_contribution")
+        useful = incentive_outcome.details.get("useful_contribution")
         if useful is None:
-            useful = outcome.details.get("useful")
+            useful = incentive_outcome.details.get("useful")
         if useful is None:
             useful = contribution_delta > 0
         if bool(useful):
             state.useful_contribution_count += 1
             self.useful_contribution_count += 1
         self.evaluation.record_incentive_outcome(
-            outcome,
+            incentive_outcome,
             useful=bool(useful),
         )
 
     def _incentive_context(
         self,
-        transaction: NetworkTransaction,
-        state: NetworkDeviceState,
+        action: Mapping[str, Any],
+        state: Any,
         outcome: NetworkOutcome,
     ) -> IncentiveContext:
         return IncentiveContext(
-            network=self.config.plugin_context(),
+            network=self.network_context(),
             device=self._device_context(state),
             device_state=self._device_state_context(state),
-            action=self._action_context(transaction),
+            action=dict(action),
             network_outcome=outcome.to_context(),
             elapsed_ms=outcome.finalized_at_ms or outcome.submitted_at_ms,
-            legacy_reward_override=(
-                transaction.reward_override
-                if self.config.legacy_reward_compatibility
-                else None
+            legacy_reward_override=outcome.metadata.get(
+                "legacy_reward_override"
             ),
         )
 
     def _update_participation(
         self,
-        transaction: NetworkTransaction,
-        state: NetworkDeviceState,
+        action: Mapping[str, Any],
+        state: Any,
         outcome: NetworkOutcome,
         incentive_outcome: IncentiveOutcome | None,
     ) -> None:
@@ -402,7 +407,7 @@ class SimulationArmRuntime:
             ParticipationContext(
                 device=self._device_context(state),
                 device_state=self._device_state_context(state),
-                action=self._action_context(transaction),
+                action=dict(action),
                 network_outcome=outcome.to_context(),
                 incentive_outcome=incentive_outcome,
             )
@@ -410,27 +415,10 @@ class SimulationArmRuntime:
         state.active = decision.active
         state.churn_reason = decision.reason if not decision.active else None
 
-    def _transaction_for_outcome(
-        self,
-        outcome: NetworkOutcome,
-    ) -> NetworkTransaction:
-        return self.network_model.get_transaction(
-            self._transaction_hash(outcome)
-        )
-
-    @staticmethod
-    def _transaction_hash(outcome: NetworkOutcome) -> str:
-        transaction_hash = outcome.metadata.get("transaction_hash")
-        if not isinstance(transaction_hash, str) or not transaction_hash:
-            raise SimulationError(
-                "A network outcome is missing its transaction reference."
-            )
-        return transaction_hash
-
     def _get_state(
         self,
         device_id: int | None,
-    ) -> NetworkDeviceState | None:
+    ) -> Any | None:
         if device_id is None:
             return None
         return self.device_states.get(device_id)
@@ -491,7 +479,7 @@ class SimulationArmRuntime:
         return statistics
 
     @staticmethod
-    def _device_context(state: NetworkDeviceState) -> dict[str, Any]:
+    def _device_context(state: Any) -> dict[str, Any]:
         return {
             "device_key": state.profile.device_key,
             "precision": state.profile.precision,
@@ -503,7 +491,7 @@ class SimulationArmRuntime:
 
     @staticmethod
     def _device_state_context(
-        state: NetworkDeviceState,
+        state: Any,
     ) -> dict[str, Any]:
         return {
             "balance": state.balance,
@@ -522,17 +510,4 @@ class SimulationArmRuntime:
                 state.last_participation_signal
             ),
             "data_submissions": state.data_submissions,
-        }
-
-    @staticmethod
-    def _action_context(
-        transaction: NetworkTransaction,
-    ) -> dict[str, Any]:
-        return {
-            "action_type": transaction.transaction_type.value,
-            "sender_device_id": transaction.sender_device_id,
-            "target_device_id": transaction.target_device_id,
-            "amount": transaction.amount,
-            "payload": dict(transaction.payload),
-            "submitted_at_ms": transaction.submitted_at_ms,
         }

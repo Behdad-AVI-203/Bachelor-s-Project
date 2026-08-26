@@ -27,6 +27,7 @@ from .metrics import (
 )
 from .models import ExternalOpportunity
 from .orchestration import SimulationArmRuntime
+from .network import NetworkModel, NetworkModelFactory
 from .plugins import load_plugin_function
 from .traffic import PoissonEventGenerator, PoissonTrafficConfig
 
@@ -66,12 +67,16 @@ class SimulationEngine:
         *,
         sample_batch_size: int = 5_000,
         persistence_batch_size: int = 2_000,
+        network_model_factory: NetworkModelFactory | None = None,
     ) -> None:
         if sample_batch_size <= 0 or persistence_batch_size <= 0:
             raise SimulationError("Persistence batch sizes must be positive.")
         self.database = database
         self.sample_batch_size = sample_batch_size
         self.persistence_batch_size = persistence_batch_size
+        self.network_model_factory = (
+            network_model_factory or self._default_network_model_factory
+        )
 
     def run_experiment(
         self,
@@ -345,7 +350,7 @@ class SimulationEngine:
         engines: Mapping[str, SimulationArmRuntime],
     ) -> None:
         for engine in engines.values():
-            block_records = engine.block_records()
+            block_records, _ = engine.persistence_records()
             if block_records:
                 self.database.simulations.insert_blocks(
                     block_records,
@@ -361,7 +366,7 @@ class SimulationEngine:
             block_ids_by_height = {
                 block["height"]: block["id"] for block in stored_blocks
             }
-            transaction_records = engine.transaction_records(
+            _, transaction_records = engine.persistence_records(
                 block_ids_by_height
             )
             if transaction_records:
@@ -712,13 +717,18 @@ class SimulationEngine:
             transaction_logic=transaction_logic,
             legacy_reward_compatibility=not is_incentive_comparison,
         )
+        network_model = self.network_model_factory(
+            simulation_network_id=int(network_row["id"]),
+            environment=environment,
+            config=config,
+            random_seed=random_seed,
+        )
+        if not isinstance(network_model, NetworkModel):
+            raise SimulationError(
+                "Network model factory must return a NetworkModel."
+            )
         return SimulationArmRuntime(
-            network_model=PoWNetworkModel(
-                simulation_network_id=int(network_row["id"]),
-                environment=environment,
-                config=config,
-                random_seed=random_seed,
-            ),
+            network_model=network_model,
             incentive_mechanism=self._load_incentive_mechanism(
                 incentive_bundle,
                 network_bundle,
@@ -726,6 +736,11 @@ class SimulationEngine:
             ),
             random_seed=random_seed,
         )
+
+    @staticmethod
+    def _default_network_model_factory(**kwargs) -> NetworkModel:
+        """Build the current built-in PoW network adapter."""
+        return PoWNetworkModel(**kwargs)
 
     def _build_pow_network_model(
         self,

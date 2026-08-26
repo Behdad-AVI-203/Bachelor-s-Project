@@ -155,6 +155,11 @@ class PoWNetworkModel(NetworkModel):
         self.last_block_mined_at_ms = 0
         self._transaction_counter = 0
 
+    @property
+    def legacy_reward_compatibility(self) -> bool:
+        """Expose transitional legacy behavior as a network capability."""
+        return self.config.legacy_reward_compatibility
+
     def advance_to(self, elapsed_ms: int) -> None:
         """Advance virtual time and finalize any completed mining jobs."""
         if elapsed_ms < self.current_time_ms:
@@ -323,6 +328,60 @@ class PoWNetworkModel(NetworkModel):
             raise BlockchainError(
                 f"Unknown PoW transaction: {transaction_hash}."
             ) from exc
+
+    def network_context(self) -> dict[str, Any]:
+        """Expose generic network facts without leaking PoW internals."""
+        return self.config.plugin_context()
+
+    def action_context_for_outcome(
+        self,
+        outcome: NetworkOutcome,
+    ) -> dict[str, Any]:
+        """Return generic action data associated with an outcome."""
+        transaction = self.get_transaction(
+            self._outcome_transaction_hash(outcome)
+        )
+        return {
+            "action_type": transaction.transaction_type.value,
+            "sender_device_id": transaction.sender_device_id,
+            "target_device_id": transaction.target_device_id,
+            "amount": transaction.amount,
+            "payload": dict(transaction.payload),
+            "submitted_at_ms": transaction.submitted_at_ms,
+        }
+
+    def record_incentive_effect(
+        self,
+        outcome: NetworkOutcome,
+        reward: float,
+    ) -> None:
+        """Attach an externally calculated incentive reward for persistence."""
+        transaction = self.get_transaction(
+            self._outcome_transaction_hash(outcome)
+        )
+        transaction.reward = float(reward)
+
+    def persistence_records(
+        self,
+        reference_ids: Mapping[int, int] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return PoW records behind the generic network boundary."""
+        return (
+            self.block_records(),
+            self.transaction_records(reference_ids or {}),
+        )
+
+    def compatibility_view(self, view_name: str) -> Any:
+        """Expose legacy PoW objects only for migration compatibility."""
+        if view_name == "ledger":
+            return self.transactions
+        if view_name == "consensus_history":
+            return self.blocks
+        raise KeyError(f"Unknown PoW compatibility view: {view_name}.")
+
+    def compatibility_action(self, outcome: NetworkOutcome) -> Any:
+        """Return the concrete legacy action object for compatibility callers."""
+        return self.get_transaction(self._outcome_transaction_hash(outcome))
 
     def device_state_records(self, elapsed_ms: int) -> list[dict[str, Any]]:
         """Build database records for every device at one virtual timestamp."""
@@ -512,6 +571,15 @@ class PoWNetworkModel(NetworkModel):
                 }
             )
         return records
+
+    @staticmethod
+    def _outcome_transaction_hash(outcome: NetworkOutcome) -> str:
+        transaction_hash = outcome.metadata.get("transaction_hash")
+        if not isinstance(transaction_hash, str) or not transaction_hash:
+            raise BlockchainError(
+                "A network outcome is missing its transaction reference."
+            )
+        return transaction_hash
 
     def _run_transaction_logic(
         self,
@@ -752,13 +820,21 @@ class PoWNetworkModel(NetworkModel):
         transaction.confirmed_at_ms = job.completes_at_ms
         transaction.block_height = job.height
         self._terminal_outcomes.append(
-            self._confirmed_network_outcome(transaction, job)
+            self._confirmed_network_outcome(
+                transaction,
+                job,
+                legacy_reward_compatibility=(
+                    self.config.legacy_reward_compatibility
+                ),
+            )
         )
 
     @staticmethod
     def _confirmed_network_outcome(
         transaction: NetworkTransaction,
         job: MiningJob,
+        *,
+        legacy_reward_compatibility: bool = True,
     ) -> NetworkOutcome:
         return NetworkOutcome(
             action_id=transaction.event_id,
@@ -776,6 +852,11 @@ class PoWNetworkModel(NetworkModel):
                 "transaction_type": transaction.transaction_type.value,
                 "data_cost_charged": (
                     transaction.transaction_type == TransactionType.IOT_DATA
+                ),
+                "legacy_reward_override": (
+                    transaction.reward_override
+                    if legacy_reward_compatibility
+                    else None
                 ),
             },
         )
