@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from time import perf_counter
 
 import pytest
@@ -190,6 +191,74 @@ def test_incentive_comparison_simulation_shares_one_network(
     ]
     assert result.network_summaries["A"]["total_rewards"] != (
         result.network_summaries["B"]["total_rewards"]
+    )
+    summary_json = result.comparison["summary_json"]
+    assert summary_json["comparison_model"] == "incentive_mechanisms"
+    assert "incentive_effectiveness_score" in summary_json
+    assert "network_context_score" in summary_json
+    assert result.comparison["winner_slot"] == summary_json[
+        "incentive_effectiveness_score"
+    ]["winner_slot"]
+
+
+@pytest.mark.integration
+def test_new_comparison_winner_is_independent_of_network_latency(database):
+    environment_id = create_environment(database, device_count=3)
+    network_id = create_network(
+        database,
+        name="Strict shared network",
+        reward_code=None,
+        include_incentive_parameters=False,
+    )
+    incentive_a_id = database.configurations.create_incentive_config(
+        name="Stable incentive A",
+        implementation_type="built_in",
+        built_in_key="default_reward",
+        parameters={"base_iot_reward": 2.0},
+    )
+    incentive_b_id = database.configurations.create_incentive_config(
+        name="Stable incentive B",
+        implementation_type="built_in",
+        built_in_key="default_reward",
+        parameters={"base_iot_reward": 1.0},
+    )
+    experiment_id = database.configurations.create_experiment_config(
+        name="Latency isolation",
+        environment_id=environment_id,
+        network_config_id=network_id,
+        incentive_a_config_id=incentive_a_id,
+        incentive_b_config_id=incentive_b_id,
+        poisson_lambda=1.0,
+        duration_seconds=2.0,
+        sample_interval_ms=1_000,
+        default_random_seed=42,
+        traffic_mix={"iot_data": 1.0},
+    )
+    engine = SimulationEngine(database)
+    result = engine.run_experiment(experiment_id, random_seed=42)
+    baseline = deepcopy(result.network_summaries)
+    baseline_comparison = result.comparison
+
+    altered = deepcopy(baseline)
+    altered["A"]["average_confirmation_ms"] = 1_000_000
+    altered["B"]["average_confirmation_ms"] = 0
+    altered["A"]["average_throughput_tps"] = 0
+    altered["B"]["average_throughput_tps"] = 1_000
+    altered_comparison = engine._persist_comparison(
+        result.simulation_id,
+        altered,
+        comparison_model="incentive_mechanisms",
+    )
+
+    baseline_incentive = baseline_comparison["summary_json"][
+        "incentive_effectiveness_score"
+    ]
+    altered_incentive = altered_comparison["summary_json"][
+        "incentive_effectiveness_score"
+    ]
+    assert altered_incentive == baseline_incentive
+    assert altered_comparison["summary_json"]["network_context_score"] != (
+        baseline_comparison["summary_json"]["network_context_score"]
     )
 
 

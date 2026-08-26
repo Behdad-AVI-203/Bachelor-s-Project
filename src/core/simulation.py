@@ -23,6 +23,7 @@ from .iot import IoTEnvironmentRuntime
 from .metrics import (
     compare_metric,
     score_comparison,
+    weighted_incentive_effectiveness,
     weighted_score_comparison,
 )
 from .models import ExternalOpportunity
@@ -194,6 +195,7 @@ class SimulationEngine:
             comparison = self._persist_comparison(
                 simulation_id,
                 summaries,
+                comparison_model=self._comparison_model(run),
             )
 
             for network_id in network_ids:
@@ -382,6 +384,8 @@ class SimulationEngine:
         self,
         simulation_id: int,
         summaries: Mapping[str, Mapping[str, Any]],
+        *,
+        comparison_model: str = "legacy_networks",
     ) -> dict[str, Any]:
         summary_a = summaries["A"]
         summary_b = summaries["B"]
@@ -528,27 +532,6 @@ class SimulationEngine:
                 "higher",
                 "ratio",
             ),
-            (
-                "gini_coefficient",
-                "Balance Gini coefficient",
-                "final_gini_coefficient",
-                "lower",
-                None,
-            ),
-            (
-                "balance_variance",
-                "Balance variance",
-                "final_balance_variance",
-                "lower",
-                None,
-            ),
-            (
-                "total_costs",
-                "Total device/network costs",
-                "total_costs",
-                "lower",
-                "currency",
-            ),
         ]
         metric_groups = {
             "network_performance": network_metric_specs,
@@ -580,6 +563,20 @@ class SimulationEngine:
                 )
                 metric["simulation_id"] = simulation_id
                 metric["details_json"] = {"category": category}
+                if category == "incentive_effectiveness":
+                    metric["details_json"]["dimension"] = (
+                        {
+                            "opportunity_participation_rate": "participation",
+                            "final_retention_rate": "retention",
+                            "useful_contribution_rate": (
+                                "useful_contribution"
+                            ),
+                            "incentive_cost_per_useful_contribution": (
+                                "incentive_efficiency"
+                            ),
+                            "reward_distribution_fairness": "fairness",
+                        }.get(summary_key)
+                    )
                 category_metrics.append(metric)
             metrics_by_category[category] = category_metrics
 
@@ -591,8 +588,31 @@ class SimulationEngine:
         legacy_score_a, legacy_score_b, legacy_winner = (
             score_comparison(metrics)
         )
-        weighted = weighted_score_comparison(metrics_by_category)
-        category_scores = weighted["categories"]
+        if comparison_model == "incentive_mechanisms":
+            incentive_score = weighted_incentive_effectiveness(
+                metrics_by_category["incentive_effectiveness"]
+            )
+            network_score = weighted_score_comparison(
+                {"network_performance": metrics_by_category["network_performance"]},
+                weights={"network_performance": 1.0},
+            )
+            weighted = incentive_score
+        else:
+            weighted = weighted_score_comparison(metrics_by_category)
+            incentive_score = weighted["categories"].get(
+                "incentive_effectiveness",
+                {},
+            )
+            network_score = weighted["categories"].get(
+                "network_performance",
+                {},
+            )
+        category_scores = weighted.get("categories", {})
+        if comparison_model == "incentive_mechanisms":
+            category_scores = {
+                "incentive_effectiveness": incentive_score,
+                "network_performance": network_score,
+            }
         comparison = {
             "simulation_id": simulation_id,
             "score_a": weighted["score_a"],
@@ -611,6 +631,9 @@ class SimulationEngine:
                     "incentive_effectiveness",
                     {},
                 ),
+                "incentive_effectiveness_score": incentive_score,
+                "network_context_score": network_score,
+                "comparison_model": comparison_model,
                 "combined": weighted,
                 "legacy_unweighted": {
                     "score_a": legacy_score_a,
@@ -621,6 +644,17 @@ class SimulationEngine:
         }
         self.database.simulations.save_comparison(comparison, metrics)
         return comparison
+
+    @staticmethod
+    def _comparison_model(run: Mapping[str, Any]) -> str:
+        snapshot = run.get("configuration_snapshot_json")
+        if isinstance(snapshot, Mapping):
+            experiment = snapshot.get("experiment")
+            if isinstance(experiment, Mapping):
+                return str(
+                    experiment.get("comparison_model", "legacy_networks")
+                )
+        return "legacy_networks"
 
     @staticmethod
     def _summary_metric_value(

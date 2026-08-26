@@ -11,6 +11,14 @@ DEFAULT_COMPARISON_WEIGHTS = {
     "incentive_effectiveness": 0.75,
 }
 
+DEFAULT_INCENTIVE_DIMENSION_WEIGHTS = {
+    "participation": 0.25,
+    "retention": 0.25,
+    "useful_contribution": 0.20,
+    "incentive_efficiency": 0.15,
+    "fairness": 0.15,
+}
+
 
 def gini_coefficient(values: Iterable[float]) -> float:
     """Calculate a non-negative Gini coefficient."""
@@ -162,4 +170,61 @@ def weighted_score_comparison(
         "winner_slot": winner,
         "weights": configured_weights,
         "categories": category_scores,
+    }
+
+
+def weighted_incentive_effectiveness(
+    metrics: Iterable[Mapping[str, Any]],
+    *,
+    weights: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
+    """Score incentive arms using one normalized metric per outcome dimension."""
+    configured = dict(weights or DEFAULT_INCENTIVE_DIMENSION_WEIGHTS)
+    selected: dict[str, Mapping[str, Any]] = {}
+    for metric in metrics:
+        dimension = metric.get("details_json", {}).get("dimension")
+        if dimension and dimension not in selected:
+            selected[str(dimension)] = metric
+
+    score_a = score_b = total_weight = 0.0
+    dimensions: dict[str, dict[str, Any]] = {}
+    for dimension, metric in selected.items():
+        weight = max(0.0, float(configured.get(dimension, 0.0)))
+        value_a = metric.get("value_a")
+        value_b = metric.get("value_b")
+        if weight == 0 or value_a is None or value_b is None:
+            continue
+        numeric_a, numeric_b = float(value_a), float(value_b)
+        if abs(numeric_a - numeric_b) < 1e-12:
+            normalized_a = normalized_b = 0.5
+        else:
+            low, high = min(numeric_a, numeric_b), max(numeric_a, numeric_b)
+            normalized_a = (numeric_a - low) / (high - low)
+            normalized_b = (numeric_b - low) / (high - low)
+            if metric.get("preferred_direction") == "lower":
+                normalized_a, normalized_b = 1 - normalized_a, 1 - normalized_b
+        score_a += weight * normalized_a
+        score_b += weight * normalized_b
+        total_weight += weight
+        dimensions[dimension] = {
+            "score_a": normalized_a,
+            "score_b": normalized_b,
+            "weight": weight,
+            "metric_name": metric.get("metric_name"),
+        }
+
+    if total_weight:
+        score_a /= total_weight
+        score_b /= total_weight
+    winner = (
+        "TIE"
+        if abs(score_a - score_b) < 1e-12
+        else ("A" if score_a > score_b else "B")
+    )
+    return {
+        "score_a": score_a,
+        "score_b": score_b,
+        "winner_slot": winner,
+        "weights": configured,
+        "dimensions": dimensions,
     }

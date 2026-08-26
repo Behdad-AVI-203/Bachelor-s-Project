@@ -40,6 +40,7 @@ from src.core import (
 from src.core.metrics import (
     balance_variance,
     gini_coefficient,
+    weighted_incentive_effectiveness,
     weighted_score_comparison,
 )
 from src.core.plugins import load_plugin_function
@@ -573,6 +574,80 @@ def test_weighted_comparison_separates_metric_categories():
     assert result["score_a"] == pytest.approx(0.75)
     assert result["score_b"] == pytest.approx(0.25)
     assert result["winner_slot"] == "A"
+
+
+def test_incentive_score_ignores_network_context_metrics():
+    incentive_metrics = [
+        {
+            "metric_name": "opportunity_participation_rate",
+            "value_a": 0.8,
+            "value_b": 0.6,
+            "preferred_direction": "higher",
+            "details_json": {"dimension": "participation"},
+        },
+        {
+            "metric_name": "final_retention_rate",
+            "value_a": 0.7,
+            "value_b": 0.5,
+            "preferred_direction": "higher",
+            "details_json": {"dimension": "retention"},
+        },
+    ]
+    network_a_fast = [
+        {"winner_slot": "A"},
+        {"winner_slot": "A"},
+    ]
+    network_b_fast = [
+        {"winner_slot": "B"},
+        {"winner_slot": "B"},
+    ]
+
+    first = weighted_incentive_effectiveness(incentive_metrics)
+    second = weighted_incentive_effectiveness(incentive_metrics)
+
+    assert first == second
+    assert first["winner_slot"] == "A"
+    assert weighted_score_comparison(
+        {"network_performance": network_a_fast},
+        weights={"network_performance": 1.0},
+    )["winner_slot"] == "A"
+    assert weighted_score_comparison(
+        {"network_performance": network_b_fast},
+        weights={"network_performance": 1.0},
+    )["winner_slot"] == "B"
+
+
+def test_incentive_score_uses_one_metric_per_dimension():
+    metrics = [
+        {
+            "metric_name": "participation",
+            "value_a": 0.9,
+            "value_b": 0.5,
+            "preferred_direction": "higher",
+            "details_json": {"dimension": "participation"},
+        },
+        {
+            "metric_name": "retention",
+            "value_a": 0.8,
+            "value_b": 0.6,
+            "preferred_direction": "higher",
+            "details_json": {"dimension": "retention"},
+        },
+        {
+            "metric_name": "correlated_participation",
+            "value_a": 1.0,
+            "value_b": 0.0,
+            "preferred_direction": "higher",
+            "details_json": {"dimension": "participation"},
+        },
+    ]
+
+    result = weighted_incentive_effectiveness(metrics)
+
+    assert set(result["dimensions"]) == {"participation", "retention"}
+    assert result["dimensions"]["participation"]["metric_name"] == (
+        "participation"
+    )
 
 
 def test_default_behavior_turns_active_opportunity_into_action():
