@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import random
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -90,7 +89,7 @@ class PoWNetworkModel(NetworkModel):
         self.simulation_network_id = simulation_network_id
         self.environment = environment
         self.config = config
-        self.random_source = random.Random(random_seed)
+        self.random_seed = int(random_seed)
         self.device_states = {
             device.database_id: NetworkDeviceState(
                 profile=device,
@@ -216,6 +215,7 @@ class PoWNetworkModel(NetworkModel):
             fee=fee,
             payload=payload,
             reward_override=reward_override,
+            event_sequence_number=event.sequence_number,
         )
         self.transactions.append(transaction)
         self.transactions_by_hash[transaction.transaction_hash] = transaction
@@ -580,7 +580,10 @@ class PoWNetworkModel(NetworkModel):
         del self.pending_transactions[: len(transactions)]
         height = len(self.blocks)
         previous_hash = self.blocks[-1].block_hash if self.blocks else None
-        duration = self._mining_duration_ms()
+        duration = self._mining_duration_ms(
+            started_at_ms=current_time_ms,
+            transactions=transactions,
+        )
         started_at = current_time_ms
         completes_at = started_at + max(1, math.ceil(duration))
         header = {
@@ -739,13 +742,40 @@ class PoWNetworkModel(NetworkModel):
             },
         )
 
-    def _mining_duration_ms(self) -> float:
+    def _mining_duration_ms(
+        self,
+        *,
+        started_at_ms: int = 0,
+        transactions: list[NetworkTransaction] | None = None,
+    ) -> float:
         base_duration = self._non_negative_number(
             self.config.parameters.get("base_mining_time_ms", 50),
             "base mining time",
         )
         difficulty_factor = 2 ** min(self.config.pow_difficulty, 30)
-        jitter = self.random_source.uniform(0.9, 1.1)
+        sequence_material = [
+            transaction.event_sequence_number
+            for transaction in (transactions or [])
+        ]
+        material = {
+            "seed": self.random_seed,
+            "network_name": self.config.network_name,
+            "pow_difficulty": self.config.pow_difficulty,
+            "max_transactions_per_block": (
+                self.config.max_transactions_per_block
+            ),
+            "started_at_ms": started_at_ms,
+            "event_sequences": sequence_material,
+        }
+        digest = hashlib.sha256(
+            json.dumps(
+                material,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).digest()
+        fraction = int.from_bytes(digest[:8], "big") / 2**64
+        jitter = 0.9 + 0.2 * fraction
         return max(1.0, base_duration * difficulty_factor * jitter)
 
     def _transaction_hash(
@@ -757,10 +787,9 @@ class PoWNetworkModel(NetworkModel):
     ) -> str:
         self._transaction_counter += 1
         material = {
-            "network_slot": self.config.network_slot,
-            "counter": self._transaction_counter,
             "event_sequence": event.sequence_number,
-            "event_id": event.database_id,
+            "network_name": self.config.network_name,
+            "pow_difficulty": self.config.pow_difficulty,
             "amount": amount,
             "fee": fee,
             "payload": payload,

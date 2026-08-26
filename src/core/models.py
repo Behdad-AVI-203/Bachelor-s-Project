@@ -220,6 +220,7 @@ class NetworkTransaction:
     rejection_reason: str | None = None
     block_height: int | None = None
     reward_override: float | None = None
+    event_sequence_number: int | None = None
 
 
 @dataclass(slots=True)

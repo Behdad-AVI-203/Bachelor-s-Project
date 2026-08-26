@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import random
+import hashlib
 from collections.abc import Mapping
 from typing import Any
 
@@ -50,7 +50,7 @@ class SimulationArmRuntime:
             incentive_mechanism or RewardIncentiveMechanism()
         )
         self.device_behavior = device_behavior or ProfitExpectationBehavior()
-        self.random_source = random.Random(random_seed)
+        self.random_seed = int(random_seed)
         self.non_participation_records: list[NonParticipationRecord] = []
         self.last_incentive_outcomes: dict[int, IncentiveOutcome] = {}
         self.opportunities_seen = 0
@@ -117,7 +117,7 @@ class SimulationArmRuntime:
                     if device_id is not None
                     else None
                 ),
-                random_value=self.random_source.random(),
+                random_value=self._decision_random_value(opportunity),
             )
         )
         if decision.action is None:
@@ -157,6 +157,25 @@ class SimulationArmRuntime:
         self._apply_submission_state(transaction, submission_outcome)
         self._apply_terminal_outcomes(terminal_outcomes)
         return outcome
+
+    def _decision_random_value(
+        self,
+        opportunity: ExternalOpportunity,
+    ) -> float:
+        """Return a stable behavior draw independent of execution order."""
+        material = {
+            "seed": self.random_seed,
+            "stream": "device_behavior",
+            "sequence_number": opportunity.sequence_number,
+            "scheduled_at_ms": opportunity.scheduled_at_ms,
+            "sender_device_id": opportunity.sender_device_id,
+            "target_device_id": opportunity.target_device_id,
+            "event_type": opportunity.event_type.value,
+        }
+        digest = hashlib.sha256(
+            repr(sorted(material.items())).encode("utf-8")
+        ).digest()
+        return int.from_bytes(digest[:8], "big") / 2**64
 
     def process_event(self, event: SimulationEvent) -> NetworkTransaction:
         """Compatibility API returning the concrete PoW transaction."""

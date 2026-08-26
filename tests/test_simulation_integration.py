@@ -106,7 +106,11 @@ def test_incentive_comparison_simulation_shares_one_network(
         entrypoint="evaluate_incentive",
         source_code=(
             "def evaluate_incentive(context):\n"
-            "    return {'reward': 2.0, 'participation_signal': 0.5}\n"
+            "    return {\n"
+            "        'reward': 0.0,\n"
+            "        'penalty_delta': 5.0,\n"
+            "        'participation_signal': -10.0,\n"
+            "    }\n"
         ),
         validation_status="valid",
     )
@@ -166,13 +170,23 @@ def test_incentive_comparison_simulation_shares_one_network(
         for arm in arms
     } == {"Incentive A", "Incentive B"}
     assert result.event_count == len(stored_events)
-    assert {
+    transaction_event_ids_a = {
         transaction["event_id"]
         for transaction in stored["recent_transactions"]["A"]
-    } == {
+    }
+    transaction_event_ids_b = {
         transaction["event_id"]
         for transaction in stored["recent_transactions"]["B"]
     }
+    assert transaction_event_ids_b < transaction_event_ids_a
+    assert transaction_event_ids_a | transaction_event_ids_b <= {
+        event["id"] for event in stored_events
+    }
+    assert result.network_summaries["B"]["custom_summary_json"][
+        "opportunity_participation_rate"
+    ] < result.network_summaries["A"]["custom_summary_json"][
+        "opportunity_participation_rate"
+    ]
     assert result.network_summaries["A"]["total_rewards"] != (
         result.network_summaries["B"]["total_rewards"]
     )
@@ -234,6 +248,34 @@ def test_simulation_is_reproducible_for_same_seed(configured_database):
         for slot, summary in second.network_summaries.items()
     }
     assert normalized_first == normalized_second
+
+    def normalized_blocks(simulation_id):
+        return [
+            {
+                key: block[key]
+                for key in (
+                    "network_slot",
+                    "height",
+                    "block_hash",
+                    "previous_hash",
+                    "mined_at_ms",
+                    "nonce",
+                    "difficulty",
+                    "transaction_count",
+                    "total_fees",
+                    "total_block_reward",
+                    "mining_duration_ms",
+                )
+            }
+            for block in database.simulations.get_blocks(
+                simulation_id,
+                limit=10_000,
+            )
+        ]
+
+    assert normalized_blocks(first.simulation_id) == normalized_blocks(
+        second.simulation_id
+    )
 
 
 @pytest.mark.integration
