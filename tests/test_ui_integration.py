@@ -127,6 +127,14 @@ def test_complete_ui_research_workflow(tmp_path):
             networks[1]["id"]
         )
         assert custom["code_artifacts"][0]["source_code"] == CUSTOM_UI_REWARD
+        database.update_records(
+            "blockchain_network_configs",
+            {
+                "reward_artifact_id": None,
+                "parameters_json": {"base_mining_time_ms": 5},
+            },
+            {"id": networks[0]["id"]},
+        )
         incentive_a_id = database.configurations.create_incentive_config(
             name="UI incentive A",
             version=1,

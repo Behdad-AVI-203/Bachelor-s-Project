@@ -66,6 +66,7 @@ def create_network(
     difficulty: int = 1,
     reward_code: str | None = DEFAULT_REWARD_CODE,
     parameters: dict[str, Any] | None = None,
+    include_incentive_parameters: bool = True,
 ) -> int:
     """Create a network and optional reward-function artifact."""
     reward_artifact_id = None
@@ -77,6 +78,17 @@ def create_network(
             source_code=reward_code,
             validation_status="valid",
         )
+    network_parameters = {
+        "base_mining_time_ms": 5,
+    }
+    if include_incentive_parameters:
+        network_parameters.update(
+            {
+                "base_iot_reward": 1.0,
+                "feedback_weight": 0.1,
+            }
+        )
+    network_parameters.update(parameters or {})
     return database.configurations.create_network_config(
         name=name,
         description="Automated test network",
@@ -85,12 +97,7 @@ def create_network(
         target_block_time_ms=500,
         transaction_fee_rate=0.01,
         reward_artifact_id=reward_artifact_id,
-        parameters={
-            "base_mining_time_ms": 5,
-            "base_iot_reward": 1.0,
-            "feedback_weight": 0.1,
-            **(parameters or {}),
-        },
+        parameters=network_parameters,
     )
 
 

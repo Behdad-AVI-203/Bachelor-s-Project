@@ -25,6 +25,42 @@ from .network import NetworkModel, NetworkOutcome
 
 TransactionLogicFunction = Callable[[Mapping[str, Any]], Any]
 
+INCENTIVE_PARAMETER_KEYS = frozenset(
+    {
+        "base_iot_reward",
+        "base_reward",
+        "feedback_weight",
+        "reward_rate",
+        "penalty_rate",
+        "reputation_weight",
+        "contribution_weight",
+        "participation_bonus",
+        "churn_threshold",
+        "utility_weight",
+        "reward",
+        "reward_delta",
+        "penalty",
+        "penalty_delta",
+        "reputation_delta",
+        "contribution_delta",
+        "contribution_score",
+        "participation_signal",
+        "incentive_parameters",
+    }
+)
+INCENTIVE_OUTPUT_KEYS = frozenset(
+    {
+        "reward",
+        "reward_delta",
+        "penalty",
+        "penalty_delta",
+        "reputation_delta",
+        "contribution_delta",
+        "contribution_score",
+        "participation_signal",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class BlockchainConfig:
@@ -38,6 +74,7 @@ class BlockchainConfig:
     transaction_fee_rate: float
     parameters: dict[str, Any] = field(default_factory=dict)
     transaction_logic: TransactionLogicFunction | None = None
+    legacy_reward_compatibility: bool = True
 
     def validate(self) -> None:
         """Validate values that affect mining and transaction processing."""
@@ -58,6 +95,17 @@ class BlockchainConfig:
             )
         if self.transaction_fee_rate < 0:
             raise BlockchainError("Transaction fee rate cannot be negative.")
+        if not self.legacy_reward_compatibility:
+            forbidden = sorted(
+                INCENTIVE_PARAMETER_KEYS.intersection(self.parameters)
+            )
+            if forbidden:
+                raise BlockchainError(
+                    "New incentive-comparison networks cannot provide "
+                    "incentive parameters: "
+                    + ", ".join(forbidden)
+                    + "."
+                )
 
     def plugin_context(self) -> dict[str, Any]:
         """Return public configuration values for uploaded plugin code."""
@@ -166,7 +214,22 @@ class PoWNetworkModel(NetworkModel):
             ),
             "transaction fee",
         )
-        reward_override = decision.get("reward")
+        if not self.config.legacy_reward_compatibility:
+            forbidden_outputs = sorted(
+                INCENTIVE_OUTPUT_KEYS.intersection(decision)
+            )
+            if forbidden_outputs:
+                raise BlockchainError(
+                    "Network transaction logic cannot provide incentive "
+                    "outputs in an incentive-comparison experiment: "
+                    + ", ".join(forbidden_outputs)
+                    + "."
+                )
+        reward_override = (
+            decision.get("reward")
+            if self.config.legacy_reward_compatibility
+            else None
+        )
 
         payload = dict(event.payload)
         payload_updates = decision.get("payload")

@@ -384,7 +384,11 @@ class SimulationArmRuntime:
             action=self._action_context(transaction),
             network_outcome=outcome.to_context(),
             elapsed_ms=outcome.finalized_at_ms or outcome.submitted_at_ms,
-            legacy_reward_override=transaction.reward_override,
+            legacy_reward_override=(
+                transaction.reward_override
+                if self.config.legacy_reward_compatibility
+                else None
+            ),
         )
 
     def _update_participation(

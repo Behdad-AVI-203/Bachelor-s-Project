@@ -248,6 +248,54 @@ def test_unprofitable_device_churns_after_data_confirmation():
     assert engine.device_states[1].churn_reason
 
 
+def test_incentive_comparison_network_plugin_cannot_emit_rewards():
+    config = _blockchain_config(
+        legacy_reward_compatibility=False,
+        transaction_logic=lambda context: {"reward": 99.0},
+    )
+    model = PoWNetworkModel(
+        simulation_network_id=1,
+        environment=_runtime(execution_cost=0.0),
+        config=config,
+        random_seed=7,
+    )
+
+    with pytest.raises(
+        BlockchainError,
+        match="cannot provide incentive outputs",
+    ):
+        model.process_event(
+            SimulationEvent(
+                sequence_number=0,
+                scheduled_at_ms=100,
+                event_type=TransactionType.IOT_DATA,
+                sender_device_id=1,
+                target_device_id=None,
+                payload={"value": 20.0},
+            )
+        )
+
+
+def test_incentive_reward_does_not_read_network_parameters():
+    mechanism = RewardIncentiveMechanism(
+        parameters={"base_iot_reward": 2.0},
+        use_network_parameters=False,
+    )
+    context = IncentiveContext(
+        network={
+            "transaction_fee_rate": 0.01,
+            "parameters": {"base_iot_reward": 100.0},
+        },
+        device={"precision": 0.5},
+        device_state={"feedback_score": 0.0},
+        action={"payload": {}},
+        network_outcome={"status": "confirmed"},
+        elapsed_ms=0,
+    )
+
+    assert mechanism.evaluate(context).reward_delta == pytest.approx(1.0)
+
+
 def test_profit_expectation_behavior_uses_incentive_signal():
     behavior = ProfitExpectationBehavior()
     context = ParticipationContext(

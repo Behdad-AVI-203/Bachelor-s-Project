@@ -6,7 +6,7 @@ from time import perf_counter
 
 import pytest
 
-from src.core import PluginExecutionError, SimulationEngine
+from src.core import PluginExecutionError, SimulationEngine, SimulationError
 
 from .factories import (
     DEFAULT_REWARD_CODE,
@@ -89,6 +89,7 @@ def test_incentive_comparison_simulation_shares_one_network(
         database,
         name="Shared PoW network",
         reward_code=None,
+        include_incentive_parameters=False,
     )
     reward_a_id = database.configurations.create_code_artifact(
         artifact_type="reward_function",
@@ -190,6 +191,46 @@ def test_incentive_comparison_simulation_shares_one_network(
     assert result.network_summaries["A"]["total_rewards"] != (
         result.network_summaries["B"]["total_rewards"]
     )
+
+
+@pytest.mark.integration
+def test_new_incentive_experiment_rejects_network_reward_artifacts(database):
+    environment_id = create_environment(database, device_count=2)
+    network_id = create_network(
+        database,
+        name="Invalid shared network",
+        reward_code=DEFAULT_REWARD_CODE,
+    )
+    incentive_a_id = database.configurations.create_incentive_config(
+        name="Strict incentive A",
+        implementation_type="built_in",
+        built_in_key="default_reward",
+        parameters={"base_iot_reward": 1.0},
+    )
+    incentive_b_id = database.configurations.create_incentive_config(
+        name="Strict incentive B",
+        implementation_type="built_in",
+        built_in_key="default_reward",
+        parameters={"base_iot_reward": 2.0},
+    )
+    experiment_id = database.configurations.create_experiment_config(
+        name="Reject network reward artifact",
+        environment_id=environment_id,
+        network_config_id=network_id,
+        incentive_a_config_id=incentive_a_id,
+        incentive_b_config_id=incentive_b_id,
+        poisson_lambda=1.0,
+        duration_seconds=1.0,
+        sample_interval_ms=1_000,
+        default_random_seed=42,
+        traffic_mix={"iot_data": 1.0},
+    )
+
+    with pytest.raises(
+        SimulationError,
+        match="network reward artifact",
+    ):
+        SimulationEngine(database).run_experiment(experiment_id)
 
 
 @pytest.mark.integration

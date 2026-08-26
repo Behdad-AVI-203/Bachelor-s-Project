@@ -127,6 +127,14 @@ def test_dashboard_view_separates_incentive_and_legacy_runs(
         identifiers["experiment_id"],
         random_seed=42,
     )
+    database.update_records(
+        "blockchain_network_configs",
+        {
+            "reward_artifact_id": None,
+            "parameters_json": {"base_mining_time_ms": 5},
+        },
+        {"id": identifiers["network_a_id"]},
+    )
 
     incentive_a_id = database.configurations.create_incentive_config(
         name="Dashboard incentive A",

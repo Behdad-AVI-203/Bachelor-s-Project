@@ -114,6 +114,7 @@ class RewardIncentiveMechanism:
 
     reward_function: RewardFunction | None = None
     parameters: Mapping[str, Any] = field(default_factory=dict)
+    use_network_parameters: bool = True
 
     def evaluate(self, context: IncentiveContext) -> IncentiveOutcome:
         """Calculate the current IoT-data reward without network coupling."""
@@ -121,7 +122,7 @@ class RewardIncentiveMechanism:
             reward = context.legacy_reward_override
         elif self.reward_function is None:
             parameters = dict(self.parameters)
-            if not parameters:
+            if not parameters and self.use_network_parameters:
                 network_parameters = context.network.get("parameters")
                 if isinstance(network_parameters, Mapping):
                     parameters = dict(network_parameters)

@@ -8,7 +8,11 @@ from typing import Any
 
 from src.database import DatabaseService
 
-from .blockchain import BlockchainConfig, PoWNetworkModel
+from .blockchain import (
+    INCENTIVE_PARAMETER_KEYS,
+    BlockchainConfig,
+    PoWNetworkModel,
+)
 from .errors import CoreError, SimulationError
 from .incentives import (
     IncentiveMechanism,
@@ -662,6 +666,24 @@ class SimulationEngine:
             raise SimulationError(
                 "Network configuration snapshot is missing its network data."
             )
+        is_incentive_comparison = incentive_bundle is not None
+        network_parameters = dict(network.get("parameters_json") or {})
+        if is_incentive_comparison:
+            if network.get("reward_artifact_id") is not None:
+                raise SimulationError(
+                    "New incentive-comparison experiments cannot use a "
+                    "network reward artifact."
+                )
+            forbidden_parameters = sorted(
+                INCENTIVE_PARAMETER_KEYS.intersection(network_parameters)
+            )
+            if forbidden_parameters:
+                raise SimulationError(
+                    "New incentive-comparison network configuration contains "
+                    "incentive parameters: "
+                    + ", ".join(forbidden_parameters)
+                    + "."
+                )
         artifacts = {
             artifact["id"]: artifact
             for artifact in network_bundle.get("code_artifacts", [])
@@ -686,8 +708,9 @@ class SimulationEngine:
             ),
             target_block_time_ms=network.get("target_block_time_ms"),
             transaction_fee_rate=float(network["transaction_fee_rate"]),
-            parameters=dict(network.get("parameters_json") or {}),
+            parameters=network_parameters,
             transaction_logic=transaction_logic,
+            legacy_reward_compatibility=not is_incentive_comparison,
         )
         return SimulationArmRuntime(
             network_model=PoWNetworkModel(
@@ -699,6 +722,7 @@ class SimulationEngine:
             incentive_mechanism=self._load_incentive_mechanism(
                 incentive_bundle,
                 network_bundle,
+                legacy_reward_compatibility=not is_incentive_comparison,
             ),
             random_seed=random_seed,
         )
@@ -721,6 +745,8 @@ class SimulationEngine:
         self,
         incentive_bundle: Mapping[str, Any] | None,
         network_bundle: Mapping[str, Any],
+        *,
+        legacy_reward_compatibility: bool = True,
     ) -> IncentiveMechanism:
         if incentive_bundle is None:
             network = network_bundle.get("network")
@@ -736,7 +762,10 @@ class SimulationEngine:
                 network.get("reward_artifact_id"),
                 "reward function",
             )
-            return RewardIncentiveMechanism(reward_function)
+            return RewardIncentiveMechanism(
+                reward_function,
+                use_network_parameters=legacy_reward_compatibility,
+            )
 
         incentive = incentive_bundle.get("incentive")
         if not isinstance(incentive, Mapping):
@@ -752,7 +781,10 @@ class SimulationEngine:
         )
         parameters = dict(incentive.get("parameters_json") or {})
         if implementation_type == "built_in":
-            return RewardIncentiveMechanism(parameters=parameters)
+            return RewardIncentiveMechanism(
+                parameters=parameters,
+                use_network_parameters=False,
+            )
         if implementation_type == "custom":
             function = self._load_artifact_function(
                 artifacts,
@@ -776,6 +808,7 @@ class SimulationEngine:
             return RewardIncentiveMechanism(
                 function,
                 parameters=parameters,
+                use_network_parameters=False,
             )
         raise SimulationError(
             "Unsupported incentive implementation type: "
