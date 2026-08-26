@@ -221,6 +221,7 @@ class NetworkTransaction:
     block_height: int | None = None
     reward_override: float | None = None
     event_sequence_number: int | None = None
+    network_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

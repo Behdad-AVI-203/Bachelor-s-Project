@@ -23,6 +23,11 @@ from .errors import (
     PluginValidationError,
     SimulationError,
 )
+from .connectivity import (
+    ConnectivityOutcome,
+    ConnectivityPolicy,
+    ProbabilisticConnectivityPolicy,
+)
 from .evaluation import IncentiveEvaluationAccumulator
 from .incentives import (
     IncentiveContext,
@@ -58,6 +63,8 @@ __all__ = [
     "BlockchainConfig",
     "BlockchainEngine",
     "BlockchainError",
+    "ConnectivityOutcome",
+    "ConnectivityPolicy",
     "CoreError",
     "ActionDecision",
     "ActionDecisionContext",
@@ -85,6 +92,7 @@ __all__ = [
     "PluginError",
     "PluginExecutionError",
     "PluginValidationError",
+    "ProbabilisticConnectivityPolicy",
     "PoWNetworkModel",
     "ProfitExpectationBehavior",
     "RewardIncentiveMechanism",

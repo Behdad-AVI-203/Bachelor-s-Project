@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .errors import BlockchainError
+from .connectivity import ConnectivityPolicy, ConnectivityOutcome
 from .iot import IoTEnvironmentRuntime
 from .metrics import average, balance_variance, gini_coefficient
 from .models import (
@@ -75,6 +76,7 @@ class BlockchainConfig:
     parameters: dict[str, Any] = field(default_factory=dict)
     transaction_logic: TransactionLogicFunction | None = None
     legacy_reward_compatibility: bool = True
+    connectivity_policy: ConnectivityPolicy | None = None
 
     def validate(self) -> None:
         """Validate values that affect mining and transaction processing."""
@@ -200,6 +202,19 @@ class PoWNetworkModel(NetworkModel):
                 "The sender device has left this network.",
             )
 
+        connectivity = self._evaluate_connectivity(event)
+        if connectivity is not None and not connectivity.delivered:
+            return self._reject_event(
+                event,
+                connectivity.failure_reason or "Communication failed.",
+                charge_data_cost=event.event_type == TransactionType.IOT_DATA,
+                outcome_metadata={
+                    "connectivity": connectivity.to_context(),
+                },
+            )
+        if connectivity is not None and connectivity.latency_ms:
+            event = self._with_network_latency(event, connectivity.latency_ms)
+
         decision = self._run_transaction_logic(event)
         if decision.get("reject_reason"):
             return self._reject_event(
@@ -284,6 +299,11 @@ class PoWNetworkModel(NetworkModel):
             payload=payload,
             reward_override=reward_override,
             event_sequence_number=event.sequence_number,
+            network_metadata=(
+                {"connectivity": connectivity.to_context()}
+                if connectivity is not None
+                else {}
+            ),
         )
         self.transactions.append(transaction)
         self.transactions_by_hash[transaction.transaction_hash] = transaction
@@ -656,6 +676,7 @@ class PoWNetworkModel(NetworkModel):
         reason: str,
         *,
         charge_data_cost: bool = False,
+        outcome_metadata: Mapping[str, Any] | None = None,
     ) -> NetworkTransaction:
         transaction = NetworkTransaction(
             transaction_hash=self._transaction_hash(
@@ -673,6 +694,7 @@ class PoWNetworkModel(NetworkModel):
             amount=event.amount,
             payload=dict(event.payload),
             rejection_reason=reason,
+            network_metadata=dict(outcome_metadata or {}),
         )
         self.transactions.append(transaction)
         self.transactions_by_hash[transaction.transaction_hash] = transaction
@@ -680,6 +702,7 @@ class PoWNetworkModel(NetworkModel):
             self._transaction_network_outcome(
                 transaction,
                 data_cost_charged=charge_data_cost,
+                metadata=outcome_metadata,
             )
         )
         return transaction
@@ -836,6 +859,20 @@ class PoWNetworkModel(NetworkModel):
         *,
         legacy_reward_compatibility: bool = True,
     ) -> NetworkOutcome:
+        metadata = {
+            "block_height": job.height,
+            "transaction_hash": transaction.transaction_hash,
+            "transaction_type": transaction.transaction_type.value,
+            "data_cost_charged": (
+                transaction.transaction_type == TransactionType.IOT_DATA
+            ),
+            **transaction.network_metadata,
+        }
+        if (
+            legacy_reward_compatibility
+            and transaction.reward_override is not None
+        ):
+            metadata["legacy_reward_override"] = transaction.reward_override
         return NetworkOutcome(
             action_id=transaction.event_id,
             status=TransactionStatus.CONFIRMED.value,
@@ -846,19 +883,7 @@ class PoWNetworkModel(NetworkModel):
             evidence={
                 "confirmation_reference": job.candidate_hash,
             },
-            metadata={
-                "block_height": job.height,
-                "transaction_hash": transaction.transaction_hash,
-                "transaction_type": transaction.transaction_type.value,
-                "data_cost_charged": (
-                    transaction.transaction_type == TransactionType.IOT_DATA
-                ),
-                "legacy_reward_override": (
-                    transaction.reward_override
-                    if legacy_reward_compatibility
-                    else None
-                ),
-            },
+            metadata=metadata,
         )
 
     @staticmethod
@@ -866,6 +891,7 @@ class PoWNetworkModel(NetworkModel):
         transaction: NetworkTransaction,
         *,
         data_cost_charged: bool = False,
+        metadata: Mapping[str, Any] | None = None,
     ) -> NetworkOutcome:
         return NetworkOutcome(
             action_id=transaction.event_id,
@@ -883,7 +909,33 @@ class PoWNetworkModel(NetworkModel):
                 "transaction_type": transaction.transaction_type.value,
                 "block_height": transaction.block_height,
                 "data_cost_charged": data_cost_charged,
+                **dict(metadata or {}),
+                **transaction.network_metadata,
             },
+        )
+
+    def _evaluate_connectivity(
+        self,
+        action: DeviceAction,
+    ) -> ConnectivityOutcome | None:
+        if self.config.connectivity_policy is None:
+            return None
+        return self.config.connectivity_policy.evaluate(action)
+
+    @staticmethod
+    def _with_network_latency(
+        action: DeviceAction,
+        latency_ms: int,
+    ) -> DeviceAction:
+        return DeviceAction(
+            sequence_number=action.sequence_number,
+            scheduled_at_ms=action.scheduled_at_ms + latency_ms,
+            event_type=action.event_type,
+            sender_device_id=action.sender_device_id,
+            target_device_id=action.target_device_id,
+            amount=action.amount,
+            payload=dict(action.payload),
+            database_id=action.database_id,
         )
 
     def _mining_duration_ms(

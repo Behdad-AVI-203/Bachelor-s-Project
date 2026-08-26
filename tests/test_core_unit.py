@@ -12,6 +12,8 @@ from src.core import (
     BlockchainConfig,
     BlockchainEngine,
     BlockchainError,
+    ConnectivityOutcome,
+    DeviceAction,
     DeviceGroupConfig,
     DeviceProfile,
     EnvironmentError,
@@ -27,6 +29,7 @@ from src.core import (
     PluginExecutionError,
     PluginValidationError,
     PoWNetworkModel,
+    ProbabilisticConnectivityPolicy,
     ProfitExpectationBehavior,
     RewardIncentiveMechanism,
     SimulationArmRuntime,
@@ -734,6 +737,113 @@ def test_pow_model_emits_outcomes_without_applying_external_policies():
     assert transaction.reward == 0
     assert model.device_states[1].cumulative_reward == 0
     assert [outcome.status for outcome in outcomes] == ["confirmed"]
+
+
+def _connectivity_action() -> DeviceAction:
+    return DeviceAction(
+        sequence_number=4,
+        scheduled_at_ms=250,
+        event_type=TransactionType.IOT_DATA,
+        sender_device_id=1,
+        target_device_id=None,
+        payload={"value": 20.0},
+        database_id=44,
+    )
+
+
+def test_connectivity_policy_is_deterministic_for_same_seed_and_action():
+    policy_a = ProbabilisticConnectivityPolicy(
+        random_seed=42,
+        link_availability_probability=0.6,
+        packet_delivery_success_probability=0.7,
+        communication_failure_probability=0.1,
+        latency_distribution_ms=(0, 5, 10),
+    )
+    policy_b = ProbabilisticConnectivityPolicy(
+        random_seed=42,
+        link_availability_probability=0.6,
+        packet_delivery_success_probability=0.7,
+        communication_failure_probability=0.1,
+        latency_distribution_ms=(0, 5, 10),
+    )
+
+    first = policy_a.evaluate(_connectivity_action())
+    second = policy_b.evaluate(_connectivity_action())
+
+    assert isinstance(first, ConnectivityOutcome)
+    assert first == second
+
+
+def test_connectivity_configuration_changes_pow_network_outcome():
+    action = _connectivity_action()
+    available = PoWNetworkModel(
+        simulation_network_id=1,
+        environment=_runtime(execution_cost=0.0),
+        config=_blockchain_config(
+            connectivity_policy=ProbabilisticConnectivityPolicy(
+                random_seed=42,
+                link_availability_probability=1.0,
+            )
+        ),
+        random_seed=42,
+    )
+    unavailable = PoWNetworkModel(
+        simulation_network_id=2,
+        environment=_runtime(execution_cost=0.0),
+        config=_blockchain_config(
+            connectivity_policy=ProbabilisticConnectivityPolicy(
+                random_seed=42,
+                link_availability_probability=0.0,
+            )
+        ),
+        random_seed=42,
+    )
+
+    available_outcome = available.process_action(action)
+    unavailable_outcome = unavailable.process_action(_connectivity_action())
+
+    assert available_outcome.accepted
+    assert unavailable_outcome.status == TransactionStatus.REJECTED.value
+    assert unavailable_outcome.metadata["connectivity"]["delivered"] is False
+
+
+def test_ab_networks_receive_identical_connectivity_conditions():
+    policy_a = ProbabilisticConnectivityPolicy(
+        random_seed=99,
+        link_availability_probability=0.5,
+        packet_delivery_success_probability=0.8,
+        latency_distribution_ms=(2, 8),
+    )
+    policy_b = ProbabilisticConnectivityPolicy(
+        random_seed=99,
+        link_availability_probability=0.5,
+        packet_delivery_success_probability=0.8,
+        latency_distribution_ms=(2, 8),
+    )
+    model_a = PoWNetworkModel(
+        simulation_network_id=1,
+        environment=_runtime(execution_cost=0.0),
+        config=_blockchain_config(
+            connectivity_policy=policy_a,
+        ),
+        random_seed=99,
+    )
+    model_b = PoWNetworkModel(
+        simulation_network_id=2,
+        environment=_runtime(execution_cost=0.0),
+        config=_blockchain_config(
+            network_slot="B",
+            connectivity_policy=policy_b,
+        ),
+        random_seed=99,
+    )
+
+    outcome_a = model_a.process_action(_connectivity_action())
+    outcome_b = model_b.process_action(_connectivity_action())
+
+    assert outcome_a.metadata["connectivity"] == (
+        outcome_b.metadata["connectivity"]
+    )
 
 
 def test_simulation_arm_runs_with_generic_non_pow_network():
