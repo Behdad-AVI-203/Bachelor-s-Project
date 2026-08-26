@@ -13,9 +13,11 @@ from src.ui.components import empty_state, format_datetime, page_header
 from src.ui.services import (
     NETWORK_TEMPLATES,
     delete_network,
+    export_configuration,
     get_database,
     get_network_editor_data,
     list_networks,
+    import_configuration,
     save_network,
 )
 
@@ -41,9 +43,6 @@ def _apply_template(prefix: str, template_name: str) -> None:
         "block_interval_ms",
         "fee_rate",
         "base_mining_time_ms",
-        "base_iot_reward",
-        "feedback_weight",
-        "reward_code",
         "logic_code",
     ):
         st.session_state[f"{prefix}_{key}"] = template[key]
@@ -88,9 +87,13 @@ def _render_network_form(
     upload_columns = st.columns(2)
     with upload_columns[0]:
         reward_upload = st.file_uploader(
-            "Load reward function (.py)",
+            "Legacy reward plugin (.py, optional)",
             type=["py"],
             key=f"{prefix}_reward_upload",
+            help=(
+                "Compatibility only. New incentive experiments must define "
+                "rewards through Incentive Mechanisms."
+            ),
         )
     with upload_columns[1]:
         logic_upload = st.file_uploader(
@@ -145,7 +148,7 @@ def _render_network_form(
                 key=f"{prefix}_fee_rate",
             )
 
-        parameter_columns = st.columns(3)
+        parameter_columns = st.columns(1)
         with parameter_columns[0]:
             base_mining_time_ms = st.number_input(
                 "Base mining time (ms)",
@@ -154,34 +157,24 @@ def _render_network_form(
                 format="%.3f",
                 key=f"{prefix}_base_mining_time_ms",
             )
-        with parameter_columns[1]:
-            base_iot_reward = st.number_input(
-                "Base IoT reward",
-                min_value=0.0,
-                step=0.1,
-                format="%.3f",
-                key=f"{prefix}_base_iot_reward",
+        st.markdown("**Connectivity (static probabilistic model)**")
+        connectivity_columns = st.columns(2)
+        with connectivity_columns[0]:
+            link_availability = st.slider(
+                "Link availability probability",
+                0.0,
+                1.0,
+                step=0.01,
+                key=f"{prefix}_link_availability",
             )
-        with parameter_columns[2]:
-            feedback_weight = st.number_input(
-                "Feedback weight",
-                min_value=0.0,
-                step=0.05,
-                format="%.3f",
-                key=f"{prefix}_feedback_weight",
+        with connectivity_columns[1]:
+            packet_delivery = st.slider(
+                "Packet delivery success probability",
+                0.0,
+                1.0,
+                step=0.01,
+                key=f"{prefix}_packet_delivery",
             )
-
-        st.markdown("**Reward plugin**")
-        reward_entrypoint = st.text_input(
-            "Reward entrypoint",
-            key=f"{prefix}_reward_entrypoint",
-        )
-        reward_code = st.text_area(
-            "Reward function Python code",
-            height=330,
-            key=f"{prefix}_reward_code",
-        )
-
         st.markdown("**Optional transaction plugin**")
         logic_entrypoint = st.text_input(
             "Blockchain logic entrypoint",
@@ -203,6 +196,14 @@ def _render_network_form(
 
     if submitted:
         try:
+            compatibility_reward_code = st.session_state.get(
+                f"{prefix}_reward_code",
+                "",
+            )
+            compatibility_reward_entrypoint = st.session_state.get(
+                f"{prefix}_reward_entrypoint",
+                "calculate_reward",
+            )
             saved_id = save_network(
                 get_database(),
                 name=name,
@@ -212,13 +213,24 @@ def _render_network_form(
                 block_interval_ms=int(block_interval_ms),
                 fee_rate=float(fee_rate),
                 base_mining_time_ms=float(base_mining_time_ms),
-                base_iot_reward=float(base_iot_reward),
-                feedback_weight=float(feedback_weight),
-                reward_code=reward_code,
-                reward_entrypoint=reward_entrypoint,
+                base_iot_reward=0.0,
+                feedback_weight=0.0,
+                reward_code=compatibility_reward_code,
+                reward_entrypoint=compatibility_reward_entrypoint,
                 logic_code=logic_code,
                 logic_entrypoint=logic_entrypoint,
                 network_id=network_id,
+                legacy_reward_compatibility=bool(
+                    st.session_state.get(f"{prefix}_reward_code", "").strip()
+                ),
+                connectivity_parameters={
+                    "link_availability_probability": float(
+                        link_availability
+                    ),
+                    "packet_delivery_success_probability": float(
+                        packet_delivery
+                    ),
+                },
             )
         except Exception as exc:
             st.error(f"Failed to save network: {exc}")
@@ -256,7 +268,7 @@ def confirm_delete(network_id: int, network_name: str) -> None:
 database = get_database()
 page_header(
     "Network Setup",
-    "Configure proof-of-work behavior and validated Python incentive plugins.",
+    "Configure consensus, validation, fees, connectivity, and network plugins.",
     icon="account_tree",
 )
 
@@ -280,7 +292,6 @@ if networks:
                 "pow_difficulty",
                 "max_transactions_per_block",
                 "target_block_time_ms",
-                "reward_name",
                 "created_at",
             ]
         ],
@@ -300,7 +311,6 @@ if networks:
                 "Block time (ms)",
                 format="%d",
             ),
-            "reward_name": "Reward plugin",
             "created_at": "Created",
         },
     )
@@ -334,10 +344,12 @@ if mode == "Create new":
             "block_interval_ms": template["block_interval_ms"],
             "fee_rate": template["fee_rate"],
             "base_mining_time_ms": template["base_mining_time_ms"],
+            "link_availability": 1.0,
+            "packet_delivery": 1.0,
             "base_iot_reward": template["base_iot_reward"],
             "feedback_weight": template["feedback_weight"],
             "reward_entrypoint": "calculate_reward",
-            "reward_code": template["reward_code"],
+            "reward_code": "",
             "logic_entrypoint": "process_transaction",
             "logic_code": template["logic_code"],
         },
@@ -372,6 +384,18 @@ elif networks:
             ),
             "fee_rate": editor_data["transaction_fee_rate"],
             "base_mining_time_ms": editor_data["base_mining_time_ms"],
+            "link_availability": (
+                editor_data.get("parameters_json", {}).get(
+                    "link_availability_probability",
+                    1.0,
+                )
+            ),
+            "packet_delivery": (
+                editor_data.get("parameters_json", {}).get(
+                    "packet_delivery_success_probability",
+                    1.0,
+                )
+            ),
             "base_iot_reward": editor_data["base_iot_reward"],
             "feedback_weight": editor_data["feedback_weight"],
             "reward_entrypoint": editor_data["reward_entrypoint"],
@@ -382,10 +406,7 @@ elif networks:
     )
     action_columns = st.columns([1, 1, 4])
     with action_columns[0]:
-        export_json = database.configurations.export_configuration_json(
-            "network",
-            selected_id,
-        )
+        export_json = export_configuration(database, "network", selected_id)
         st.download_button(
             "Export JSON",
             data=export_json,
@@ -424,10 +445,7 @@ with st.expander("Import a network configuration"):
     ):
         try:
             payload = uploaded_bundle.getvalue().decode("utf-8")
-            imported = database.configurations.import_configuration_json(
-                payload,
-                conflict=conflict_policy,
-            )
+            imported = import_configuration(database, payload, conflict=conflict_policy)
         except Exception as exc:
             st.error(f"Failed to import network: {exc}")
         else:

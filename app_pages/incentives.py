@@ -16,9 +16,11 @@ from src.ui.services import (
     DEFAULT_INCENTIVE_CODE,
     INCENTIVE_TEMPLATES,
     delete_incentive,
+    export_configuration,
     get_database,
     get_incentive_editor_data,
     list_incentives,
+    import_configuration,
     save_incentive,
 )
 
@@ -357,10 +359,7 @@ elif incentives:
 
     action_columns = st.columns([1, 1, 4])
     with action_columns[0]:
-        export_json = database.configurations.export_configuration_json(
-            "incentive",
-            selected_id,
-        )
+        export_json = export_configuration(database, "incentive", selected_id)
         st.download_button(
             "Export JSON",
             data=export_json,
@@ -396,10 +395,7 @@ with st.expander("Import an incentive configuration"):
     ):
         try:
             payload = uploaded_bundle.getvalue().decode("utf-8")
-            imported = database.configurations.import_configuration_json(
-                payload,
-                conflict=conflict_policy,
-            )
+            imported = import_configuration(database, payload, conflict=conflict_policy)
         except Exception as exc:
             st.error(f"Failed to import incentive: {exc}")
         else:

@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from src.ui.read_models import (
     INCENTIVE_COMPARISON,
     comparison_summary_from_experiment,
     comparison_summary_from_results,
 )
-from src.ui.services import get_experiment_comparison_summary
-from src.ui.services import get_dashboard_view
+from src.ui.services import (
+    build_results_export_frame,
+    get_dashboard_view,
+    get_experiment_comparison_summary,
+)
 
 from src.core import SimulationEngine
 
@@ -50,6 +55,55 @@ def test_legacy_experiment_summary_preserves_network_arm_labels():
     assert summary.arm_a_name == "Network A"
     assert summary.arm_b_name == "Network B"
     assert summary.labels.winner == "Winning network"
+
+
+def test_results_export_contains_snapshot_and_metric_categories():
+    frame = build_results_export_frame(
+        {
+            "run": {
+                "name": "Study",
+                "configuration_snapshot_json": {
+                    "experiment": {"comparison_model": INCENTIVE_COMPARISON}
+                },
+            },
+            "experiment_summary": {
+                "comparison_model": INCENTIVE_COMPARISON,
+                "is_legacy": False,
+                "environment_name": "Environment",
+                "shared_network_name": "Network",
+                "incentive_a_name": "A",
+                "incentive_b_name": "B",
+            },
+            "comparison": {"winner_slot": "A"},
+            "comparison_metrics": [
+                {
+                    "display_name": "Retention",
+                    "value_a": 1,
+                    "value_b": 0.5,
+                    "winner_slot": "A",
+                    "details_json": {"category": "incentive_effectiveness"},
+                }
+            ],
+        }
+    )
+    assert set(frame["category"]) == {
+        "experiment_context",
+        "incentive_effectiveness",
+    }
+    assert frame.iloc[0]["winner_type"] == "incentive"
+    assert "experiment" in frame.iloc[0]["experiment_snapshot"]
+
+
+def test_streamlit_pages_do_not_query_repositories_directly():
+    pages = Path("app_pages")
+    forbidden = (
+        "database.simulations",
+        "database.configurations",
+        "database.store",
+    )
+    for path in pages.glob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        assert not any(token in source for token in forbidden), path
 
 
 def test_results_summary_reads_immutable_incentive_snapshot():

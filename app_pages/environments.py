@@ -12,7 +12,9 @@ from src.ui.services import (
     delete_environment,
     empty_group_dataframe,
     environment_group_dataframe,
+    export_configuration,
     get_database,
+    import_configuration,
     list_environments,
     update_environment,
 )
@@ -265,10 +267,7 @@ elif environments:
 
     action_columns = st.columns([1, 1, 4])
     with action_columns[0]:
-        export_json = database.configurations.export_configuration_json(
-            "environment",
-            selected_id,
-        )
+        export_json = export_configuration(database, "environment", selected_id)
         st.download_button(
             "Export JSON",
             data=export_json,
@@ -319,10 +318,7 @@ with st.expander("Import an environment configuration"):
     ):
         try:
             payload = uploaded_bundle.getvalue().decode("utf-8")
-            imported = database.configurations.import_configuration_json(
-                payload,
-                conflict=conflict_policy,
-            )
+            imported = import_configuration(database, payload, conflict=conflict_policy)
         except Exception as exc:
             st.error(f"Failed to import environment: {exc}")
         else:

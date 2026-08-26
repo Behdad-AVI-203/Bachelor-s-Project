@@ -11,7 +11,13 @@ import streamlit as st
 
 from src.ui.components import empty_state, format_datetime, page_header
 from src.ui.exports import dataframe_to_csv, results_pdf
-from src.ui.services import get_database, get_simulation_results_view
+from src.ui.services import (
+    build_results_export_frame,
+    get_completed_simulations,
+    get_database,
+    get_simulation_device_states,
+    get_simulation_results_view,
+)
 
 
 COLORS = {"A": "#2563EB", "B": "#0F766E"}
@@ -106,7 +112,7 @@ def _average_balance_series(
     rows = []
     for arm in arms:
         slot = arm["network_slot"]
-        states = database.simulations.get_device_states(arm["id"])
+        states = get_simulation_device_states(database, arm["id"])
         frame = pd.DataFrame(states)
         if frame.empty:
             continue
@@ -304,19 +310,7 @@ page_header(
 )
 
 try:
-    first_page = database.simulations.get_simulation_history(
-        status="completed",
-        limit=1,
-    )
-    total = int(first_page["total"])
-    completed_runs = (
-        database.simulations.get_simulation_history(
-            status="completed",
-            limit=max(total, 1),
-        )["items"]
-        if total
-        else []
-    )
+    completed_runs = get_completed_simulations(database)
 except Exception as exc:
     st.error(f"Failed to load completed simulations: {exc}")
     st.stop()
@@ -504,7 +498,7 @@ if network_context.empty:
 else:
     st.dataframe(network_context, hide_index=True, width="stretch")
 
-export_frame = effectiveness_frame if not effectiveness_frame.empty else network_context
+export_frame = build_results_export_frame(results)
 export_rows = export_frame.fillna("—").to_dict("records")
 export_columns = st.columns([1, 1, 4])
 with export_columns[0]:

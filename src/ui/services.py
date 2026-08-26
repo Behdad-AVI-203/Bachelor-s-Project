@@ -562,6 +562,95 @@ def get_simulation_results_view(
     return view
 
 
+def get_simulation_device_states(
+    database: DatabaseService,
+    simulation_network_id: int,
+) -> list[dict[str, Any]]:
+    """Return device snapshots through the UI service boundary."""
+    return database.simulations.get_device_states(simulation_network_id)
+
+
+def get_completed_simulations(
+    database: DatabaseService,
+) -> list[dict[str, Any]]:
+    """Return all completed runs as comparison-aware history rows."""
+    history = get_simulation_history_view(
+        database,
+        status="completed",
+        limit=10_000,
+    )
+    return list(history["items"])
+
+
+def export_configuration(
+    database: DatabaseService,
+    configuration_type: str,
+    configuration_id: int,
+) -> str:
+    """Export a configuration without exposing repository details to pages."""
+    return database.configurations.export_configuration_json(
+        configuration_type,
+        configuration_id,
+    )
+
+
+def import_configuration(
+    database: DatabaseService,
+    payload: str,
+    *,
+    conflict: str = "rename",
+) -> dict[str, Any]:
+    """Import a configuration bundle through the service boundary."""
+    return database.configurations.import_configuration_json(
+        payload,
+        conflict=conflict,
+    )
+
+
+def build_results_export_frame(
+    results: Mapping[str, Any],
+) -> pd.DataFrame:
+    """Build a portable export containing snapshot context and categories."""
+    summary = dict(results.get("experiment_summary") or {})
+    run = dict(results.get("run") or {})
+    comparison = dict(results.get("comparison") or {})
+    rows: list[dict[str, Any]] = []
+    context = {
+        "category": "experiment_context",
+        "experiment": run.get("name"),
+        "environment": summary.get("environment_name"),
+        "shared_network": summary.get("shared_network_name"),
+        "incentive_a": summary.get("incentive_a_name"),
+        "incentive_b": summary.get("incentive_b_name"),
+        "comparison_model": summary.get("comparison_model"),
+        "winner_type": (
+            "incentive"
+            if not summary.get("is_legacy")
+            else "network"
+        ),
+        "winner_slot": comparison.get("winner_slot"),
+        "experiment_snapshot": json.dumps(
+            run.get("configuration_snapshot_json") or {},
+            sort_keys=True,
+            default=str,
+        ),
+    }
+    rows.append(context)
+    for metric in results.get("comparison_metrics") or []:
+        details = metric.get("details_json") or {}
+        rows.append(
+            {
+                "category": details.get("category", "comparison"),
+                "metric": metric.get("display_name"),
+                "value_a": metric.get("value_a"),
+                "value_b": metric.get("value_b"),
+                "winner_slot": metric.get("winner_slot"),
+                "comparison_model": summary.get("comparison_model"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def get_simulation_history_view(
     database: DatabaseService,
     *,
@@ -1281,37 +1370,29 @@ def save_network(
     logic_code: str,
     logic_entrypoint: str,
     network_id: int | None = None,
+    legacy_reward_compatibility: bool = False,
+    connectivity_parameters: Mapping[str, Any] | None = None,
 ) -> int:
     """Validate plugins and create or update a network configuration."""
     clean_name = name.strip()
     if not clean_name:
         raise ValueError("Network name is required.")
-    reward_function = load_plugin_function(
-        reward_code,
-        reward_entrypoint,
-        plugin_name=f"{clean_name} reward function",
-    )
-    reward_function(
-        {
-            "network": {"parameters": {}},
-            "device": {
-                "precision": 1.0,
-                "execution_cost": 0.1,
-                "data_rate": 1.0,
-                "profit_expectation": 0,
-            },
-            "device_state": {
-                "feedback_score": 0,
-                "balance": 0,
-                "cumulative_reward": 0,
-                "cumulative_cost": 0,
-                "data_submissions": 1,
-            },
-            "block_height": 0,
-            "elapsed_ms": 0,
-            "transaction": {"payload": {}, "submitted_at_ms": 0},
-        }
-    )
+    if legacy_reward_compatibility:
+        reward_function = load_plugin_function(
+            reward_code,
+            reward_entrypoint,
+            plugin_name=f"{clean_name} reward function",
+        )
+        reward_function(
+            {
+                "network": {"parameters": {}},
+                "device": {"precision": 1.0, "execution_cost": 0.1},
+                "device_state": {"feedback_score": 0, "balance": 0},
+                "block_height": 0,
+                "elapsed_ms": 0,
+                "transaction": {"payload": {}, "submitted_at_ms": 0},
+            }
+        )
     if logic_code.strip():
         load_plugin_function(
             logic_code,
@@ -1326,16 +1407,18 @@ def save_network(
     )
     created_artifacts = []
     try:
-        reward_artifact_id = _save_artifact_version(
-            database,
-            artifact_type="reward_function",
-            name=f"{clean_name} reward",
-            entrypoint=reward_entrypoint,
-            source_code=reward_code,
-            current_artifact_id=(
-                current.get("reward_artifact_id") if current else None
-            ),
-        )
+        reward_artifact_id = None
+        if legacy_reward_compatibility:
+            reward_artifact_id = _save_artifact_version(
+                database,
+                artifact_type="reward_function",
+                name=f"{clean_name} reward",
+                entrypoint=reward_entrypoint,
+                source_code=reward_code,
+                current_artifact_id=(
+                    current.get("reward_artifact_id") if current else None
+                ),
+            )
         if reward_artifact_id not in {
             current.get("reward_artifact_id") if current else None
         }:
@@ -1376,8 +1459,15 @@ def save_network(
             "blockchain_logic_artifact_id": logic_artifact_id,
             "parameters_json": {
                 "base_mining_time_ms": float(base_mining_time_ms),
-                "base_iot_reward": float(base_iot_reward),
-                "feedback_weight": float(feedback_weight),
+                **(
+                    {
+                        "base_iot_reward": float(base_iot_reward),
+                        "feedback_weight": float(feedback_weight),
+                    }
+                    if legacy_reward_compatibility
+                    else {}
+                ),
+                **dict(connectivity_parameters or {}),
             },
         }
         if network_id is None:

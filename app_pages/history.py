@@ -7,7 +7,11 @@ import streamlit as st
 
 from src.ui.components import empty_state, format_datetime, page_header
 from src.ui.exports import dataframe_to_csv
-from src.ui.services import delete_simulation, get_database
+from src.ui.services import (
+    delete_simulation,
+    get_database,
+    get_simulation_history_view,
+)
 
 
 def _history_frame(rows: list[dict]) -> pd.DataFrame:
@@ -15,14 +19,20 @@ def _history_frame(rows: list[dict]) -> pd.DataFrame:
     if dataframe.empty:
         return dataframe
     dataframe["created_at"] = dataframe["created_at"].map(format_datetime)
-    dataframe["average_churn_rate"] = dataframe[
-        ["network_a_churn_rate", "network_b_churn_rate"]
-    ].mean(axis=1)
+    churn_columns = [
+        column
+        for column in ("network_a_churn_rate", "network_b_churn_rate")
+        if column in dataframe
+    ]
+    if churn_columns:
+        dataframe["average_churn_rate"] = dataframe[churn_columns].mean(axis=1)
+    else:
+        dataframe["average_churn_rate"] = None
     dataframe["winner"] = dataframe.apply(
         lambda row: (
-            row["network_a_name"]
+            row.get("arm_a_name") or row.get("network_a_name")
             if row["winner_slot"] == "A"
-            else row["network_b_name"]
+            else row.get("arm_b_name") or row.get("network_b_name")
             if row["winner_slot"] == "B"
             else "Tie"
             if row["winner_slot"] == "TIE"
@@ -76,28 +86,16 @@ status_filter = st.selectbox(
 
 try:
     selected_status = None if status_filter == "All" else status_filter
-    first_page = database.simulations.get_simulation_history(
+    history_view = get_simulation_history_view(
+        database,
         status=selected_status,
-        limit=1,
+        limit=10_000,
     )
-    total = int(first_page["total"])
-    rows = (
-        database.simulations.get_simulation_history(
-            status=selected_status,
-            limit=max(total, 1),
-        )["items"]
-        if total
-        else []
-    )
-    all_first_page = database.simulations.get_simulation_history(limit=1)
-    all_total = int(all_first_page["total"])
-    all_rows = (
-        database.simulations.get_simulation_history(
-            limit=max(all_total, 1),
-        )["items"]
-        if all_total
-        else []
-    )
+    total = int(history_view["total"])
+    rows = list(history_view["items"])
+    all_view = get_simulation_history_view(database, limit=10_000)
+    all_total = int(all_view["total"])
+    all_rows = list(all_view["items"])
 except Exception as exc:
     st.error(f"Failed to load simulation history: {exc}")
     st.stop()
@@ -112,12 +110,23 @@ if not rows:
 
 history = _history_frame(rows)
 full_history = _history_frame(all_rows)
+history["comparison_type"] = history["is_legacy"].map(
+    lambda value: "Legacy network" if value else "Incentive"
+)
+full_history["comparison_type"] = full_history["is_legacy"].map(
+    lambda value: "Legacy network" if value else "Incentive"
+)
+history["arm_a_name"] = history["arm_a_name"].fillna("—")
+history["arm_b_name"] = history["arm_b_name"].fillna("—")
+full_history["arm_a_name"] = full_history["arm_a_name"].fillna("—")
+full_history["arm_b_name"] = full_history["arm_b_name"].fillna("—")
 display_columns = [
     "id",
     "name",
     "environment_name",
-    "network_a_name",
-    "network_b_name",
+    "comparison_type",
+    "arm_a_name",
+    "arm_b_name",
     "created_at",
     "status",
     "average_churn_rate",
@@ -135,8 +144,9 @@ selection = st.dataframe(
         "id": st.column_config.NumberColumn("ID", format="%d"),
         "name": st.column_config.TextColumn("Simulation", pinned=True),
         "environment_name": "Environment",
-        "network_a_name": "Network A",
-        "network_b_name": "Network B",
+        "comparison_type": "Comparison type",
+        "arm_a_name": "Arm A",
+        "arm_b_name": "Arm B",
         "created_at": "Created",
         "status": "Status",
         "average_churn_rate": st.column_config.NumberColumn(

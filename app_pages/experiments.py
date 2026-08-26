@@ -13,11 +13,13 @@ import streamlit as st
 from src.ui.components import empty_state, format_datetime, page_header
 from src.ui.services import (
     clone_experiment,
+    export_configuration,
     get_database,
     get_experiment_editor_data,
     list_environments,
     list_experiments,
     list_incentives,
+    import_configuration,
     list_networks,
     save_experiment,
 )
@@ -429,10 +431,7 @@ elif experiments:
 
     action_columns = st.columns([1, 1, 4])
     with action_columns[0]:
-        export_json = database.configurations.export_configuration_json(
-            "experiment",
-            selected_id,
-        )
+        export_json = export_configuration(database, "experiment", selected_id)
         st.download_button(
             "Export JSON",
             data=export_json,
@@ -476,7 +475,8 @@ with st.expander("Import an experiment configuration"):
                 raise ValueError(
                     "The uploaded JSON must be an experiment or full bundle."
                 )
-            imported = database.configurations.import_configuration_json(
+            imported = import_configuration(
+                database,
                 bundle,
                 conflict=conflict_policy,
             )
