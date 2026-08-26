@@ -11,6 +11,37 @@ from .models import DeviceAction
 NetworkModelFactory = Callable[..., "NetworkModel"]
 
 
+class NetworkModelRegistry:
+    """Resolve configured network model types to implementation factories."""
+
+    def __init__(self) -> None:
+        self._factories: dict[str, NetworkModelFactory] = {}
+
+    def register(
+        self,
+        model_type: str,
+        factory: NetworkModelFactory,
+    ) -> None:
+        key = str(model_type).strip().lower()
+        if not key:
+            raise ValueError("Network model type cannot be empty.")
+        self._factories[key] = factory
+
+    def resolve(self, model_type: str) -> NetworkModelFactory:
+        key = str(model_type).strip().lower()
+        try:
+            return self._factories[key]
+        except KeyError as exc:
+            available = ", ".join(sorted(self._factories)) or "none"
+            raise ValueError(
+                f"Unsupported network model type '{model_type}'. "
+                f"Available types: {available}."
+            ) from exc
+
+    def create(self, model_type: str, **kwargs: Any) -> "NetworkModel":
+        return self.resolve(model_type)(**kwargs)
+
+
 @dataclass(frozen=True, slots=True)
 class NetworkOutcome:
     """Generic result of a network model processing one device action."""
@@ -102,3 +133,11 @@ class NetworkModel(Protocol):
         list[dict[str, Any]],
     ]:
         """Return opaque persistence records for blocks and transactions."""
+
+    def persist_to_database(
+        self,
+        database: Any,
+        *,
+        chunk_size: int = 1_000,
+    ) -> None:
+        """Persist network-specific records through an adapter boundary."""

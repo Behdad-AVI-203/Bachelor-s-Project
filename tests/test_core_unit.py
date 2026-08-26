@@ -146,6 +146,9 @@ class MockNetworkModel:
     def persistence_records(self, reference_ids=None):
         return [], []
 
+    def persist_to_database(self, database, *, chunk_size=1_000):
+        return None
+
     def compatibility_view(self, view_name):
         return []
 
@@ -946,6 +949,79 @@ def test_simulation_arm_runs_with_generic_non_pow_network():
     assert outcome is not None
     assert arm.device_states[1].cumulative_reward == pytest.approx(2.0)
     assert arm.network_model.rewards[7] == pytest.approx(2.0)
+
+
+def test_network_model_registry_resolves_configured_type():
+    from src.core import NetworkModelRegistry
+
+    registry = NetworkModelRegistry()
+    marker = object()
+    registry.register("mock", lambda **kwargs: marker)
+
+    assert registry.create("MOCK") is marker
+
+
+def test_registry_pow_factory_preserves_pow_behavior():
+    from src.core.simulation import SimulationEngine
+
+    config = _blockchain_config()
+    kwargs = {
+        "simulation_network_id": 1,
+        "environment": _runtime(execution_cost=0.0),
+        "config": config,
+        "random_seed": 17,
+    }
+    direct = PoWNetworkModel(**kwargs)
+    resolved = SimulationEngine._default_network_model_registry().create(
+        "pow",
+        **kwargs,
+    )
+    action = _connectivity_action()
+
+    assert isinstance(resolved, PoWNetworkModel)
+    assert direct.process_action(action) == resolved.process_action(action)
+
+
+def test_simulation_persistence_uses_network_adapter_not_block_tables():
+    class FakeDatabase:
+        class Simulations:
+            def __init__(self):
+                self.summaries = []
+
+            def upsert_network_summary(self, summary):
+                self.summaries.append(summary)
+
+        def __init__(self):
+            self.simulations = self.Simulations()
+
+    class AdapterArm:
+        simulation_network_id = 1
+
+        def __init__(self):
+            self.persisted = False
+
+        def persist_to_database(self, database, *, chunk_size):
+            self.persisted = True
+
+        def summary_record(self):
+            return {
+                "simulation_network_id": self.simulation_network_id,
+                "custom_summary_json": {},
+            }
+
+    database = FakeDatabase()
+    engine = object.__new__(__import__(
+        "src.core.simulation",
+        fromlist=["SimulationEngine"],
+    ).SimulationEngine)
+    engine.database = database
+    engine.persistence_batch_size = 10
+    arm = AdapterArm()
+
+    engine._persist_network_results({"A": arm})
+
+    assert arm.persisted
+    assert database.simulations.summaries
 
 
 def test_orchestration_has_no_pow_type_imports():

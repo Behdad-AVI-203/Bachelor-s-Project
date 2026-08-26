@@ -28,7 +28,11 @@ from .metrics import (
 )
 from .models import ExternalOpportunity
 from .orchestration import SimulationArmRuntime
-from .network import NetworkModel, NetworkModelFactory
+from .network import (
+    NetworkModel,
+    NetworkModelFactory,
+    NetworkModelRegistry,
+)
 from .plugins import load_plugin_function
 from .traffic import PoissonEventGenerator, PoissonTrafficConfig
 
@@ -69,14 +73,16 @@ class SimulationEngine:
         sample_batch_size: int = 5_000,
         persistence_batch_size: int = 2_000,
         network_model_factory: NetworkModelFactory | None = None,
+        network_model_registry: NetworkModelRegistry | None = None,
     ) -> None:
         if sample_batch_size <= 0 or persistence_batch_size <= 0:
             raise SimulationError("Persistence batch sizes must be positive.")
         self.database = database
         self.sample_batch_size = sample_batch_size
         self.persistence_batch_size = persistence_batch_size
-        self.network_model_factory = (
-            network_model_factory or self._default_network_model_factory
+        self.network_model_factory = network_model_factory
+        self.network_model_registry = (
+            network_model_registry or self._default_network_model_registry()
         )
 
     def run_experiment(
@@ -352,30 +358,10 @@ class SimulationEngine:
         engines: Mapping[str, SimulationArmRuntime],
     ) -> None:
         for engine in engines.values():
-            block_records, _ = engine.persistence_records()
-            if block_records:
-                self.database.simulations.insert_blocks(
-                    block_records,
-                    chunk_size=self.persistence_batch_size,
-                )
-            stored_blocks = self.database.list_records(
-                "blocks",
-                filters={
-                    "simulation_network_id": engine.simulation_network_id
-                },
-                order_by="height",
+            engine.persist_to_database(
+                self.database,
+                chunk_size=self.persistence_batch_size,
             )
-            block_ids_by_height = {
-                block["height"]: block["id"] for block in stored_blocks
-            }
-            _, transaction_records = engine.persistence_records(
-                block_ids_by_height
-            )
-            if transaction_records:
-                self.database.simulations.insert_transactions(
-                    transaction_records,
-                    chunk_size=self.persistence_batch_size,
-                )
             self.database.simulations.upsert_network_summary(
                 engine.summary_record()
             )
@@ -733,30 +719,55 @@ class SimulationEngine:
             network.get("blockchain_logic_artifact_id"),
             "blockchain logic",
         )
-        consensus_type = str(network.get("consensus_type", "pow")).lower()
-        if consensus_type != "pow":
-            raise SimulationError(
-                f"Unsupported network consensus type: {consensus_type}."
+        model_type = str(
+            network.get("network_model_type")
+            or network.get("model_type")
+            or network.get("consensus_type")
+            or "pow"
+        ).lower()
+        config = None
+        if model_type == "pow":
+            config = BlockchainConfig(
+                network_name=str(network["name"]),
+                network_slot=str(network_row["network_slot"]),
+                pow_difficulty=int(network["pow_difficulty"]),
+                max_transactions_per_block=int(
+                    network["max_transactions_per_block"]
+                ),
+                target_block_time_ms=network.get("target_block_time_ms"),
+                transaction_fee_rate=float(network["transaction_fee_rate"]),
+                parameters=network_parameters,
+                transaction_logic=transaction_logic,
+                legacy_reward_compatibility=not is_incentive_comparison,
             )
-        config = BlockchainConfig(
-            network_name=str(network["name"]),
-            network_slot=str(network_row["network_slot"]),
-            pow_difficulty=int(network["pow_difficulty"]),
-            max_transactions_per_block=int(
-                network["max_transactions_per_block"]
-            ),
-            target_block_time_ms=network.get("target_block_time_ms"),
-            transaction_fee_rate=float(network["transaction_fee_rate"]),
-            parameters=network_parameters,
-            transaction_logic=transaction_logic,
-            legacy_reward_compatibility=not is_incentive_comparison,
-        )
-        network_model = self.network_model_factory(
-            simulation_network_id=int(network_row["id"]),
-            environment=environment,
-            config=config,
-            random_seed=random_seed,
-        )
+        factory = self.network_model_factory
+        if factory is not None:
+            factory_kwargs = {
+                "simulation_network_id": int(network_row["id"]),
+                "environment": environment,
+                "config": config,
+                "network_config": network,
+                "random_seed": random_seed,
+            }
+            try:
+                network_model = factory(**factory_kwargs)
+            except TypeError as exc:
+                if "network_config" not in str(exc):
+                    raise
+                factory_kwargs.pop("network_config")
+                network_model = factory(**factory_kwargs)
+        else:
+            try:
+                network_model = self.network_model_registry.create(
+                    model_type,
+                    simulation_network_id=int(network_row["id"]),
+                    environment=environment,
+                    config=config,
+                    network_config=network,
+                    random_seed=random_seed,
+                )
+            except ValueError as exc:
+                raise SimulationError(str(exc)) from exc
         if not isinstance(network_model, NetworkModel):
             raise SimulationError(
                 "Network model factory must return a NetworkModel."
@@ -774,7 +785,14 @@ class SimulationEngine:
     @staticmethod
     def _default_network_model_factory(**kwargs) -> NetworkModel:
         """Build the current built-in PoW network adapter."""
+        kwargs.pop("network_config", None)
         return PoWNetworkModel(**kwargs)
+
+    @classmethod
+    def _default_network_model_registry(cls) -> NetworkModelRegistry:
+        registry = NetworkModelRegistry()
+        registry.register("pow", cls._default_network_model_factory)
+        return registry
 
     def _build_pow_network_model(
         self,

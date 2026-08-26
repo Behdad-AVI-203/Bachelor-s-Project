@@ -391,6 +391,34 @@ class PoWNetworkModel(NetworkModel):
             self.transaction_records(reference_ids or {}),
         )
 
+    def persist_to_database(
+        self,
+        database: Any,
+        *,
+        chunk_size: int = 1_000,
+    ) -> None:
+        """Persist PoW-specific records behind the network adapter boundary."""
+        block_records = self.block_records()
+        if block_records:
+            database.simulations.insert_blocks(
+                block_records,
+                chunk_size=min(chunk_size, 500),
+            )
+        stored_blocks = database.list_records(
+            "blocks",
+            filters={"simulation_network_id": self.simulation_network_id},
+            order_by="height",
+        )
+        block_ids_by_height = {
+            block["height"]: block["id"] for block in stored_blocks
+        }
+        transaction_records = self.transaction_records(block_ids_by_height)
+        if transaction_records:
+            database.simulations.insert_transactions(
+                transaction_records,
+                chunk_size=chunk_size,
+            )
+
     def compatibility_view(self, view_name: str) -> Any:
         """Expose legacy PoW objects only for migration compatibility."""
         if view_name == "ledger":

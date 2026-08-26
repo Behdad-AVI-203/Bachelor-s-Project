@@ -270,6 +270,17 @@ class SimulationArmRuntime:
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         return self.network_model.persistence_records(reference_ids)
 
+    def persist_to_database(
+        self,
+        database: Any,
+        *,
+        chunk_size: int = 1_000,
+    ) -> None:
+        """Delegate network-specific persistence to the selected model."""
+        adapter = getattr(self.network_model, "persist_to_database", None)
+        if adapter is not None:
+            adapter(database, chunk_size=chunk_size)
+
     def _apply_submission_state(
         self,
         outcome: NetworkOutcome,
