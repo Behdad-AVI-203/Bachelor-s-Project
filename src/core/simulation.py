@@ -13,15 +13,19 @@ from .blockchain import (
     BlockchainConfig,
     PoWNetworkModel,
 )
+from .connectivity import ProbabilisticConnectivityPolicy
 from .errors import CoreError, SimulationError
 from .incentives import (
     IncentiveMechanism,
+    IncentiveMechanismRegistry,
     PluginIncentiveMechanism,
     RewardIncentiveMechanism,
+    default_incentive_registry,
 )
 from .iot import IoTEnvironmentRuntime
 from .metrics import (
     compare_metric,
+    incentive_evaluation_configuration,
     score_comparison,
     weighted_incentive_effectiveness,
     weighted_score_comparison,
@@ -74,6 +78,7 @@ class SimulationEngine:
         persistence_batch_size: int = 2_000,
         network_model_factory: NetworkModelFactory | None = None,
         network_model_registry: NetworkModelRegistry | None = None,
+        incentive_mechanism_registry: IncentiveMechanismRegistry | None = None,
     ) -> None:
         if sample_batch_size <= 0 or persistence_batch_size <= 0:
             raise SimulationError("Persistence batch sizes must be positive.")
@@ -83,6 +88,9 @@ class SimulationEngine:
         self.network_model_factory = network_model_factory
         self.network_model_registry = (
             network_model_registry or self._default_network_model_registry()
+        )
+        self.incentive_mechanism_registry = (
+            incentive_mechanism_registry or default_incentive_registry()
         )
 
     def run_experiment(
@@ -202,6 +210,7 @@ class SimulationEngine:
                 simulation_id,
                 summaries,
                 comparison_model=self._comparison_model(run),
+                evaluation_config=self._evaluation_config(run),
             )
 
             for network_id in network_ids:
@@ -372,6 +381,7 @@ class SimulationEngine:
         summaries: Mapping[str, Mapping[str, Any]],
         *,
         comparison_model: str = "legacy_networks",
+        evaluation_config: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         summary_a = summaries["A"]
         summary_b = summaries["B"]
@@ -576,7 +586,10 @@ class SimulationEngine:
         )
         if comparison_model == "incentive_mechanisms":
             incentive_score = weighted_incentive_effectiveness(
-                metrics_by_category["incentive_effectiveness"]
+                metrics_by_category["incentive_effectiveness"],
+                weights=(
+                    evaluation_config or incentive_evaluation_configuration()
+                ).get("weights"),
             )
             network_score = weighted_score_comparison(
                 {"network_performance": metrics_by_category["network_performance"]},
@@ -626,6 +639,9 @@ class SimulationEngine:
                     "score_b": legacy_score_b,
                     "winner_slot": legacy_winner,
                 },
+                "evaluation_configuration": (
+                    evaluation_config or incentive_evaluation_configuration()
+                ),
             },
         }
         self.database.simulations.save_comparison(comparison, metrics)
@@ -641,6 +657,19 @@ class SimulationEngine:
                     experiment.get("comparison_model", "legacy_networks")
                 )
         return "legacy_networks"
+
+    @staticmethod
+    def _evaluation_config(
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        snapshot = run.get("configuration_snapshot_json")
+        if isinstance(snapshot, Mapping):
+            execution = snapshot.get("execution")
+            if isinstance(execution, Mapping):
+                config = execution.get("evaluation_configuration")
+                if isinstance(config, Mapping):
+                    return dict(config)
+        return incentive_evaluation_configuration()
 
     @staticmethod
     def _summary_metric_value(
@@ -727,6 +756,10 @@ class SimulationEngine:
         ).lower()
         config = None
         if model_type == "pow":
+            connectivity_policy = self._connectivity_policy(
+                network_parameters,
+                random_seed=random_seed,
+            )
             config = BlockchainConfig(
                 network_name=str(network["name"]),
                 network_slot=str(network_row["network_slot"]),
@@ -739,6 +772,7 @@ class SimulationEngine:
                 parameters=network_parameters,
                 transaction_logic=transaction_logic,
                 legacy_reward_compatibility=not is_incentive_comparison,
+                connectivity_policy=connectivity_policy,
             )
         factory = self.network_model_factory
         if factory is not None:
@@ -794,6 +828,56 @@ class SimulationEngine:
         registry.register("pow", cls._default_network_model_factory)
         return registry
 
+    @staticmethod
+    def _connectivity_policy(
+        parameters: Mapping[str, Any],
+        *,
+        random_seed: int,
+    ) -> ProbabilisticConnectivityPolicy | None:
+        keys = {
+            "link_availability_probability",
+            "packet_delivery_success_probability",
+            "communication_failure_probability",
+            "latency_distribution_ms",
+        }
+        if not keys.intersection(parameters):
+            return None
+        latency = parameters.get("latency_distribution_ms", ())
+        if isinstance(latency, list):
+            latency = tuple(latency)
+        if not isinstance(latency, tuple):
+            raise SimulationError(
+                "Connectivity latency distribution must be a list of "
+                "non-negative integers."
+            )
+        try:
+            return ProbabilisticConnectivityPolicy(
+                random_seed=random_seed,
+                link_availability_probability=float(
+                    parameters.get(
+                        "link_availability_probability",
+                        1.0,
+                    )
+                ),
+                packet_delivery_success_probability=float(
+                    parameters.get(
+                        "packet_delivery_success_probability",
+                        1.0,
+                    )
+                ),
+                communication_failure_probability=float(
+                    parameters.get(
+                        "communication_failure_probability",
+                        0.0,
+                    )
+                ),
+                latency_distribution_ms=tuple(int(value) for value in latency),
+            )
+        except (TypeError, ValueError) as exc:
+            raise SimulationError(
+                f"Invalid connectivity configuration: {exc}."
+            ) from exc
+
     def _build_pow_network_model(
         self,
         network_row: Mapping[str, Any],
@@ -848,10 +932,20 @@ class SimulationEngine:
         )
         parameters = dict(incentive.get("parameters_json") or {})
         if implementation_type == "built_in":
-            return RewardIncentiveMechanism(
-                parameters=parameters,
-                use_network_parameters=False,
-            )
+            key = incentive.get("built_in_key")
+            if not key:
+                raise SimulationError(
+                    "Built-in incentive configuration is missing built_in_key."
+                )
+            try:
+                return self.incentive_mechanism_registry.create(
+                    str(key),
+                    parameters,
+                )
+            except Exception as exc:
+                if isinstance(exc, SimulationError):
+                    raise
+                raise SimulationError(str(exc)) from exc
         if implementation_type == "custom":
             function = self._load_artifact_function(
                 artifacts,

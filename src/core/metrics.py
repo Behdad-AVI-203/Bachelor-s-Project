@@ -18,6 +18,18 @@ DEFAULT_INCENTIVE_DIMENSION_WEIGHTS = {
     "incentive_efficiency": 0.15,
     "fairness": 0.15,
 }
+INCENTIVE_EVALUATION_CONFIG_VERSION = "1.0"
+
+
+def incentive_evaluation_configuration() -> dict[str, Any]:
+    """Return the immutable scoring policy used for new comparisons."""
+    return {
+        "version": INCENTIVE_EVALUATION_CONFIG_VERSION,
+        "dimensions": list(DEFAULT_INCENTIVE_DIMENSION_WEIGHTS),
+        "weights": dict(DEFAULT_INCENTIVE_DIMENSION_WEIGHTS),
+        "normalization": "pairwise_minmax",
+        "policy": "weighted_incentive_effectiveness",
+    }
 
 
 def gini_coefficient(values: Iterable[float]) -> float:

@@ -32,9 +32,11 @@ from .evaluation import IncentiveEvaluationAccumulator
 from .incentives import (
     IncentiveContext,
     IncentiveMechanism,
+    IncentiveMechanismRegistry,
     IncentiveOutcome,
     PluginIncentiveMechanism,
     RewardIncentiveMechanism,
+    default_incentive_registry,
 )
 from .iot import (
     DeviceGroupConfig,
@@ -83,6 +85,7 @@ __all__ = [
     "IncentiveContext",
     "IncentiveError",
     "IncentiveMechanism",
+    "IncentiveMechanismRegistry",
     "IncentiveOutcome",
     "IoTEnvironmentDefinition",
     "IoTEnvironmentRuntime",
@@ -102,6 +105,7 @@ __all__ = [
     "PoWNetworkModel",
     "ProfitExpectationBehavior",
     "RewardIncentiveMechanism",
+    "default_incentive_registry",
     "SimulationEngine",
     "SimulationArmRuntime",
     "SimulationError",

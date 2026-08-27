@@ -19,6 +19,8 @@ from src.core import (
     EnvironmentError,
     ExternalOpportunity,
     IncentiveContext,
+    IncentiveError,
+    IncentiveMechanismRegistry,
     IncentiveOutcome,
     IoTEnvironmentRuntime,
     NetworkModel,
@@ -37,6 +39,8 @@ from src.core import (
     TransactionStatus,
     TransactionType,
 )
+from src.core.incentives import default_incentive_registry
+from src.core.simulation import SimulationEngine
 from src.core.metrics import (
     balance_variance,
     gini_coefficient,
@@ -1060,6 +1064,75 @@ def test_reward_incentive_mechanism_uses_generic_context():
     assert outcome == IncentiveOutcome(reward=2.25)
     assert captured_context["action"]["action_type"] == "iot_data"
     assert captured_context["network_outcome"]["status"] == "confirmed"
+
+
+def test_builtin_incentive_keys_dispatch_distinct_logic():
+    context = IncentiveContext(
+        network={"name": "shared", "parameters": {}},
+        device={"precision": 1.0, "execution_cost": 0.1},
+        device_state={"feedback_score": 0, "reputation_score": 0},
+        action={"action_type": "iot_data", "payload": {}},
+        network_outcome={"status": "confirmed", "metadata": {}},
+        elapsed_ms=10,
+    )
+    registry = default_incentive_registry()
+    default = registry.create(
+        "default_reward",
+        {"base_iot_reward": 1.0, "feedback_weight": 0.0},
+    ).evaluate(context)
+    participation = registry.create(
+        "participation_first",
+        {
+            "base_iot_reward": 1.0,
+            "feedback_weight": 0.0,
+            "participation_bonus": 2.0,
+        },
+    ).evaluate(context)
+    assert participation.reward_delta > default.reward_delta
+    assert participation.participation_signal == pytest.approx(2.0)
+
+
+def test_unknown_builtin_incentive_key_fails_clearly():
+    with pytest.raises(IncentiveError, match="Unknown built-in"):
+        default_incentive_registry().create("does_not_exist")
+
+
+def test_plugin_context_hides_arm_identifiers():
+    context = IncentiveContext(
+        network={
+            "name": "shared",
+            "network_slot": "A",
+            "simulation_network_id": 1,
+            "parameters": {},
+        },
+        device={"precision": 1.0},
+        device_state={},
+        action={},
+        network_outcome={"status": "confirmed", "metadata": {}},
+        elapsed_ms=0,
+    )
+    plugin_context = context.to_plugin_context()
+    assert "network_slot" not in plugin_context["network"]
+    assert "simulation_network_id" not in plugin_context["network"]
+
+
+def test_persisted_connectivity_configuration_is_reconstructed():
+    policy = SimulationEngine._connectivity_policy(
+        {
+            "link_availability_probability": 0.25,
+            "packet_delivery_success_probability": 0.75,
+            "communication_failure_probability": 0.1,
+            "latency_distribution_ms": [1, 5],
+        },
+        random_seed=9,
+    )
+    assert isinstance(policy, ProbabilisticConnectivityPolicy)
+    assert policy.link_availability_probability == pytest.approx(0.25)
+    assert policy.latency_distribution_ms == (1, 5)
+
+
+def test_no_persisted_connectivity_keeps_policy_disabled():
+    assert SimulationEngine._connectivity_policy({}, random_seed=9) is None
 
 
 def test_plugin_validation_and_execution_errors():

@@ -11,6 +11,7 @@ from .errors import IncentiveError, PluginExecutionError
 
 RewardFunction = Callable[[Mapping[str, Any]], Any]
 IncentiveFunction = Callable[[Mapping[str, Any]], Any]
+IncentiveMechanismFactory = Callable[[Mapping[str, Any]], "IncentiveMechanism"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,8 +33,19 @@ class IncentiveContext:
         if not isinstance(metadata, Mapping):
             metadata = {}
         action = dict(self.action)
+        network = {
+            key: value
+            for key, value in self.network.items()
+            if key
+            not in {
+                "network_slot",
+                "simulation_network_id",
+                "arm_id",
+                "comparison_arm",
+            }
+        }
         return {
-            "network": dict(self.network),
+            "network": network,
             "device": dict(self.device),
             "device_state": dict(self.device_state),
             "action": action,
@@ -106,6 +118,118 @@ class IncentiveMechanism(Protocol):
 
     def evaluate(self, context: IncentiveContext) -> IncentiveOutcome:
         """Evaluate one confirmed action and return incentive effects."""
+
+
+class IncentiveMechanismRegistry:
+    """Resolve built-in incentive keys to independent implementations."""
+
+    def __init__(self) -> None:
+        self._factories: dict[str, IncentiveMechanismFactory] = {}
+
+    def register(
+        self,
+        key: str,
+        factory: IncentiveMechanismFactory,
+    ) -> None:
+        normalized = str(key).strip().lower()
+        if not normalized:
+            raise ValueError("Incentive mechanism key cannot be empty.")
+        self._factories[normalized] = factory
+
+    def create(
+        self,
+        key: str,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> IncentiveMechanism:
+        normalized = str(key).strip().lower()
+        try:
+            factory = self._factories[normalized]
+        except KeyError as exc:
+            available = ", ".join(sorted(self._factories)) or "none"
+            raise IncentiveError(
+                f"Unknown built-in incentive mechanism '{key}'. "
+                f"Available mechanisms: {available}."
+            ) from exc
+        return factory(dict(parameters or {}))
+
+
+def _base_reward(
+    context: IncentiveContext,
+    parameters: Mapping[str, Any],
+) -> float:
+    return max(
+        0.0,
+        float(parameters.get("base_iot_reward", 1.0))
+        * float(context.device.get("precision", 1.0))
+        + float(parameters.get("feedback_weight", 0.1))
+        * float(context.device_state.get("feedback_score", 0)),
+    )
+
+
+def _default_builtin(parameters: Mapping[str, Any]) -> IncentiveMechanism:
+    return RewardIncentiveMechanism(
+        parameters=dict(parameters),
+        use_network_parameters=False,
+    )
+
+
+def _participation_first_builtin(
+    parameters: Mapping[str, Any],
+) -> IncentiveMechanism:
+    bonus = float(parameters.get("participation_bonus", 0.25))
+
+    def evaluate(context: Mapping[str, Any]) -> dict[str, Any]:
+        typed = _context_from_plugin_mapping(context)
+        return {
+            "reward_delta": _base_reward(typed, parameters) + bonus,
+            "contribution_delta": 1.0,
+            "participation_signal": bonus,
+            "details": {"mechanism": "participation_first"},
+        }
+
+    return PluginIncentiveMechanism(evaluate, parameters={})
+
+
+def _fairness_aware_builtin(
+    parameters: Mapping[str, Any],
+) -> IncentiveMechanism:
+    fairness_weight = float(parameters.get("fairness_weight", 0.25))
+
+    def evaluate(context: Mapping[str, Any]) -> dict[str, Any]:
+        typed = _context_from_plugin_mapping(context)
+        reputation = float(typed.device_state.get("reputation_score", 0))
+        adjustment = max(0.0, fairness_weight * (1.0 - min(reputation, 1.0)))
+        return {
+            "reward_delta": _base_reward(typed, parameters) + adjustment,
+            "contribution_delta": 1.0,
+            "participation_signal": adjustment,
+            "details": {"mechanism": "fairness_aware"},
+        }
+
+    return PluginIncentiveMechanism(evaluate, parameters={})
+
+
+def _context_from_plugin_mapping(
+    context: Mapping[str, Any],
+) -> IncentiveContext:
+    return IncentiveContext(
+        network=context.get("network", {}),
+        device=context.get("device", {}),
+        device_state=context.get("device_state", {}),
+        action=context.get("action", {}),
+        network_outcome=context.get("network_outcome", {}),
+        elapsed_ms=int(context.get("elapsed_ms", 0)),
+    )
+
+
+def default_incentive_registry() -> IncentiveMechanismRegistry:
+    """Return the built-in mechanisms advertised by the platform."""
+    registry = IncentiveMechanismRegistry()
+    registry.register("default_reward", _default_builtin)
+    registry.register("default", _default_builtin)
+    registry.register("participation_first", _participation_first_builtin)
+    registry.register("fairness_aware", _fairness_aware_builtin)
+    return registry
 
 
 @dataclass(frozen=True, slots=True)

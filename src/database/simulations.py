@@ -43,6 +43,31 @@ class SimulationRepository:
             selected_seed = experiment.get("default_random_seed")
         if selected_seed is None:
             selected_seed = secrets.randbits(63)
+        if experiment.get("comparison_model") == "incentive_mechanisms":
+            snapshot = dict(snapshot)
+            snapshot["execution"] = {
+                **dict(snapshot.get("execution") or {}),
+                "effective_seed": int(selected_seed),
+                "evaluation_configuration": {
+                    "version": "1.0",
+                    "dimensions": [
+                        "participation",
+                        "retention",
+                        "useful_contribution",
+                        "incentive_efficiency",
+                        "fairness",
+                    ],
+                    "weights": {
+                        "participation": 0.25,
+                        "retention": 0.25,
+                        "useful_contribution": 0.20,
+                        "incentive_efficiency": 0.15,
+                        "fairness": 0.15,
+                    },
+                    "normalization": "pairwise_minmax",
+                    "policy": "weighted_incentive_effectiveness",
+                },
+            }
 
         with self.database.transaction() as connection:
             simulation_id = self.database._insert(

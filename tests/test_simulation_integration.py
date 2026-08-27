@@ -78,6 +78,58 @@ def test_dual_network_simulation_uses_one_event_stream(
 
 
 @pytest.mark.integration
+def test_incentive_run_snapshots_seed_and_evaluation_configuration(
+    configured_database,
+):
+    database, identifiers = configured_database
+    environment_id = identifiers["environment_id"]
+    network_id = database.configurations.create_network_config(
+        name="Snapshot network",
+        description="Network without legacy reward",
+        pow_difficulty=1,
+        max_transactions_per_block=20,
+        target_block_time_ms=500,
+        transaction_fee_rate=0.01,
+        parameters={"base_mining_time_ms": 5},
+    )
+    incentive_a = database.configurations.create_incentive_config(
+        name="Snapshot A",
+        version=1,
+        implementation_type="built_in",
+        built_in_key="default_reward",
+        parameters={"base_iot_reward": 1.0},
+    )
+    incentive_b = database.configurations.create_incentive_config(
+        name="Snapshot B",
+        version=1,
+        implementation_type="built_in",
+        built_in_key="participation_first",
+        parameters={"base_iot_reward": 1.0, "participation_bonus": 0.5},
+    )
+    experiment_id = database.configurations.create_experiment_config(
+        name="Snapshot experiment",
+        environment_id=environment_id,
+        network_config_id=network_id,
+        incentive_a_config_id=incentive_a,
+        incentive_b_config_id=incentive_b,
+        poisson_lambda=1.0,
+        duration_seconds=1.0,
+        sample_interval_ms=1_000,
+        default_random_seed=123,
+    )
+    result = SimulationEngine(database).run_experiment(
+        experiment_id,
+        random_seed=456,
+    )
+    run = database.get_record("simulation_runs", {"id": result.simulation_id})
+    execution = run["configuration_snapshot_json"]["execution"]
+    assert execution["effective_seed"] == 456
+    assert execution["evaluation_configuration"]["policy"] == (
+        "weighted_incentive_effectiveness"
+    )
+
+
+@pytest.mark.integration
 def test_incentive_comparison_simulation_shares_one_network(
     database,
 ):

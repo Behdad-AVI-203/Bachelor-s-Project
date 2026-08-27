@@ -113,7 +113,6 @@ class BlockchainConfig:
         """Return public configuration values for uploaded plugin code."""
         return {
             "network_name": self.network_name,
-            "network_slot": self.network_slot,
             "pow_difficulty": self.pow_difficulty,
             "max_transactions_per_block": (
                 self.max_transactions_per_block
