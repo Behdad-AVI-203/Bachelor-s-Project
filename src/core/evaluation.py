@@ -33,6 +33,11 @@ class MetricDefinition:
     participates_in_scoring: bool
     contextual_only: bool
     version: str = "1.0"
+    numerator: str = "Defined by aggregation."
+    zero_denominator: str = "Return 0.0 unless explicitly nullable."
+    rejected_actions: str = "Included only when specified by the metric."
+    inactive_devices: str = "Included only when specified by the metric."
+    aggregation_window: str = "Entire simulation run."
 
 
 PRIMARY_METRIC_DEFINITIONS = {
@@ -40,55 +45,108 @@ PRIMARY_METRIC_DEFINITIONS = {
         "opportunity_participation_rate", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "ratio",
         "all external opportunities; rejected actions count as participation",
-        True, False,
+        True, False, numerator="device actions created",
+        zero_denominator="0.0 when no opportunities occur",
+        rejected_actions="count as participation because an action was attempted",
+        inactive_devices="their opportunities remain in the denominator",
     ),
     "final_retention_rate": MetricDefinition(
         "final_retention_rate", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "final_ratio",
         "all enabled devices; active at final virtual time",
-        True, False,
+        True, False, numerator="devices active at final virtual time",
+        zero_denominator="0.0 when the environment has no devices",
+        inactive_devices="included in the initial-device denominator",
+        aggregation_window="final virtual-time state",
     ),
     "useful_contribution_rate": MetricDefinition(
         "useful_contribution_rate", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "ratio",
         "IoT-data opportunities; operational usefulness rule",
-        True, False,
+        True, False, numerator=(
+            "accepted IoT-data actions satisfying the operational usefulness rule"
+        ), zero_denominator="0.0 when no IoT-data opportunities occur",
+        rejected_actions="never count as useful",
+        inactive_devices="their IoT-data opportunities remain in the denominator",
     ),
     "useful_contribution_per_active_device": MetricDefinition(
         "useful_contribution_per_active_device", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "ratio",
         "average active devices over sampled virtual time",
-        False, False,
+        False, False, numerator="operational useful contribution count",
+        zero_denominator="0.0 when average active-device count is zero",
+        inactive_devices="excluded from the sampled active-device denominator",
     ),
     "incentive_cost_per_useful_contribution": MetricDefinition(
         "incentive_cost_per_useful_contribution", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "lower", "ratio",
         "useful contribution count",
-        True, False,
+        True, False, numerator="total rewards minus total penalties",
+        zero_denominator="None when no useful contributions occur",
+        rejected_actions="may affect cost only if the incentive evaluates them",
     ),
     "reward_distribution_fairness": MetricDefinition(
         "reward_distribution_fairness", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "gini_complement",
         "all enabled devices, including inactive and zero-reward devices",
-        True, False,
+        True, False, numerator="one minus Gini of cumulative rewards",
+        zero_denominator="0.0 when total rewards are zero",
+        inactive_devices="included with their observed cumulative reward",
     ),
     "utility_distribution_fairness": MetricDefinition(
         "utility_distribution_fairness", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "gini_complement",
         "all enabled devices, including inactive devices",
-        False, False,
+        False, False, numerator="one minus Gini of cumulative net utility",
+        zero_denominator="0.0 for an empty device population",
+        inactive_devices="included with their observed cumulative utility",
     ),
     "average_net_utility_per_device": MetricDefinition(
         "average_net_utility_per_device", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "mean",
         "all enabled devices",
-        True, False,
+        True, False, numerator="sum of cumulative device net utility",
+        zero_denominator="0.0 for an empty device population",
+        inactive_devices="included",
     ),
     "non_negative_utility_rate": MetricDefinition(
         "non_negative_utility_rate", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "ratio",
         "all enabled devices",
-        False, False,
+        False, False, numerator="devices with cumulative net utility >= 0",
+        zero_denominator="0.0 for an empty device population",
+        inactive_devices="included",
+    ),
+    "average_active_device_ratio": MetricDefinition(
+        "average_active_device_ratio", "device_behavior",
+        MetricCategory.DEVICE_BEHAVIOR, "higher", "time_mean",
+        "all enabled devices at each sampled virtual time", False, False,
+        numerator="sum of sampled active-device ratios",
+        zero_denominator="falls back to final retention when no samples exist",
+        inactive_devices="included in each sample denominator",
+    ),
+    "churn_rate": MetricDefinition(
+        "churn_rate", "device_behavior", MetricCategory.DEVICE_BEHAVIOR,
+        "lower", "final_ratio", "all enabled devices", False, False,
+        numerator="devices inactive at final virtual time",
+        zero_denominator="0.0 when the environment has no devices",
+        inactive_devices="counted in the numerator",
+        aggregation_window="final virtual-time state",
+    ),
+    "total_rewards": MetricDefinition(
+        "total_rewards", "evaluation", MetricCategory.INCENTIVE_EFFECTIVENESS,
+        "lower", "sum", "not a ratio", False, False,
+        numerator="sum of cumulative reward deltas across all devices",
+    ),
+    "total_penalties": MetricDefinition(
+        "total_penalties", "evaluation", MetricCategory.INCENTIVE_EFFECTIVENESS,
+        "lower", "sum", "not a ratio", False, False,
+        numerator="sum of cumulative penalty deltas across all devices",
+    ),
+    "net_incentive_cost": MetricDefinition(
+        "net_incentive_cost", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "lower", "sum", "not a ratio",
+        False, False, numerator="total rewards minus total penalties",
     ),
 }
 
@@ -116,11 +174,12 @@ def metric_semantics() -> dict[str, str]:
         "useful_contribution": (
             "An accepted IoT-data outcome with contribution_delta > 0, "
             "unless the selected mechanism explicitly supplies "
-            "details.useful_contribution."
+            "details.useful_contribution. This is an operational simulation "
+            "assumption, not an objective physical quality measurement."
         ),
         "incentive_cost": (
             "Rewards minus penalties; penalties are transfers to the device "
-            "ledger, not assumed system savings."
+            "ledger and are not automatically interpreted as system savings."
         ),
         "fairness": (
             "One minus the non-negative Gini coefficient over all enabled "

@@ -50,7 +50,10 @@ from src.core.metrics import (
     weighted_incentive_effectiveness,
     weighted_score_comparison,
 )
-from src.core.plugins import load_plugin_function
+from src.core.plugins import (
+    load_plugin_function,
+    plugin_determinism_requirements,
+)
 from src.core.traffic import PoissonEventGenerator, PoissonTrafficConfig
 import src.core.orchestration as orchestration_module
 
@@ -660,6 +663,37 @@ def test_incentive_score_uses_one_metric_per_dimension():
     )
 
 
+def test_reference_incentive_normalization_is_opponent_independent():
+    metric = {
+        "metric_name": "participation",
+        "value_a": 0.75,
+        "value_b": 0.25,
+        "preferred_direction": "higher",
+        "details_json": {"dimension": "participation"},
+    }
+    changed_opponent = {**metric, "value_b": 0.05}
+    first = weighted_incentive_effectiveness([metric])
+    second = weighted_incentive_effectiveness([changed_opponent])
+    assert first["dimensions"]["participation"]["score_a"] == pytest.approx(0.75)
+    assert second["dimensions"]["participation"]["score_a"] == pytest.approx(0.75)
+
+
+def test_reference_normalization_direction_and_missing_values():
+    lower = {
+        "metric_name": "cost",
+        "value_a": 0.2,
+        "value_b": 0.8,
+        "preferred_direction": "lower",
+        "details_json": {"dimension": "incentive_efficiency"},
+    }
+    assert weighted_incentive_effectiveness([lower])["winner_slot"] == "A"
+    missing = {**lower, "value_b": None}
+    result = weighted_incentive_effectiveness([missing])
+    assert result["score_a"] == 0
+    assert result["score_b"] == 0
+    assert result["dimensions"] == {}
+
+
 def test_default_behavior_turns_active_opportunity_into_action():
     behavior = ProfitExpectationBehavior()
     opportunity = ExternalOpportunity(
@@ -1204,3 +1238,42 @@ def test_replication_plan_requires_unique_nonempty_seeds():
         ReplicationPlan(1, ())
     with pytest.raises(ValueError):
         ReplicationPlan(1, (1, 1))
+
+
+def test_replication_plan_has_stable_identity_and_order():
+    first = ReplicationPlan(7, (22, 11))
+    second = ReplicationPlan(7, (11, 22))
+    assert first.seeds == (11, 22)
+    assert first.identity == second.identity
+
+
+def test_paired_statistics_ignore_nan_and_handle_empty():
+    summary = _summarize_metric("x", [float("nan"), 2.0], [1.0, 1.0])
+    assert summary.replication_count == 1
+    assert summary.mean_difference == pytest.approx(1.0)
+    empty = _summarize_metric("x", [float("nan")], [1.0])
+    assert empty.replication_count == 0
+    assert empty.mean_difference is None
+
+
+def test_plugin_determinism_contract_is_explicit():
+    requirements = plugin_determinism_requirements()
+    assert any("wall-clock" in item for item in requirements)
+    assert any("arm identity" in item for item in requirements)
+
+
+def test_zero_incentive_builtin_is_distinct_from_default():
+    context = IncentiveContext(
+        network={},
+        device={"precision": 1.0},
+        device_state={"feedback_score": 0.0},
+        action={"event_type": "iot_data"},
+        network_outcome={"accepted": True},
+        elapsed_ms=0,
+    )
+    default = default_incentive_registry().create(
+        "default_reward", {"base_iot_reward": 1.0}
+    ).evaluate(context)
+    zero = default_incentive_registry().create("zero_incentive").evaluate(context)
+    assert default.reward_delta != zero.reward_delta
+    assert zero.reward_delta == 0.0

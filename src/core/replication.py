@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from math import sqrt
+import math
 from statistics import fmean, stdev
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from .metrics import incentive_evaluation_configuration
 from .simulation import SimulationEngine, SimulationExecutionResult
@@ -21,15 +23,24 @@ class ReplicationPlan:
             raise ValueError("Replication plan requires at least one seed.")
         if len(set(self.seeds)) != len(self.seeds):
             raise ValueError("Replication seeds must be unique.")
+        object.__setattr__(self, "seeds", tuple(sorted(int(seed) for seed in self.seeds)))
+
+    @property
+    def identity(self) -> str:
+        payload = f"{self.experiment_config_id}:{','.join(map(str, self.seeds))}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True, slots=True)
 class ReplicationResult:
+    experiment_config_id: int
+    replication_index: int
     seed: int
     simulation_id: int
     metrics_a: Mapping[str, float | None]
     metrics_b: Mapping[str, float | None]
     execution: SimulationExecutionResult
+    metric_set_version: str = "1.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +67,7 @@ class ReplicationSummary:
     aggregate_winner: str
     network_context: Mapping[str, Any]
     evaluation_configuration: Mapping[str, Any]
+    replication_id: str = ""
 
 
 class ReplicationRunner:
@@ -79,13 +91,15 @@ class ReplicationRunner:
             "average_net_utility_per_device",
         ))
         results: list[ReplicationResult] = []
-        for seed in plan.seeds:
+        for replication_index, seed in enumerate(plan.seeds, start=1):
             execution = self.engine.run_experiment(
                 plan.experiment_config_id,
                 random_seed=int(seed),
             )
             results.append(
                 ReplicationResult(
+                    experiment_config_id=plan.experiment_config_id,
+                    replication_index=replication_index,
                     seed=int(seed),
                     simulation_id=execution.simulation_id,
                     metrics_a=_metrics(
@@ -97,6 +111,11 @@ class ReplicationRunner:
                         names,
                     ),
                     execution=execution,
+                    metric_set_version=str(
+                        execution.comparison.get("summary_json", {})
+                        .get("evaluation_configuration", {})
+                        .get("metric_definitions_version", "1.0")
+                    ),
                 )
             )
         summaries = {
@@ -129,6 +148,7 @@ class ReplicationRunner:
             aggregate_winner=winner,
             network_context={},
             evaluation_configuration=_evaluation_configuration(results),
+            replication_id=plan.identity,
         )
 
 
@@ -143,6 +163,7 @@ def _metrics(
         name: (
             float(custom[name])
             if custom.get(name) is not None
+            and math.isfinite(float(custom[name]))
             else None
         )
         for name in names
@@ -150,7 +171,11 @@ def _metrics(
 
 
 def _mean(values: Sequence[float | None]) -> float | None:
-    prepared = [float(value) for value in values if value is not None]
+    prepared = [
+        float(value)
+        for value in values
+        if value is not None and math.isfinite(float(value))
+    ]
     return fmean(prepared) if prepared else None
 
 
@@ -163,6 +188,7 @@ def _summarize_metric(
         (float(a), float(b))
         for a, b in zip(values_a, values_b, strict=True)
         if a is not None and b is not None
+        and math.isfinite(float(a)) and math.isfinite(float(b))
     ]
     differences = [a - b for a, b in pairs]
     count = len(pairs)

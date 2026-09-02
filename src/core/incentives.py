@@ -173,6 +173,20 @@ def _default_builtin(parameters: Mapping[str, Any]) -> IncentiveMechanism:
     )
 
 
+def _zero_builtin(parameters: Mapping[str, Any]) -> IncentiveMechanism:
+    def evaluate(context: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "reward_delta": 0.0,
+            "penalty_delta": 0.0,
+            "reputation_delta": 0.0,
+            "contribution_delta": 0.0,
+            "participation_signal": 0.0,
+            "details": {"mechanism": "zero_incentive"},
+        }
+
+    return PluginIncentiveMechanism(evaluate, parameters={})
+
+
 def _participation_first_builtin(
     parameters: Mapping[str, Any],
 ) -> IncentiveMechanism:
@@ -227,6 +241,7 @@ def default_incentive_registry() -> IncentiveMechanismRegistry:
     registry = IncentiveMechanismRegistry()
     registry.register("default_reward", _default_builtin)
     registry.register("default", _default_builtin)
+    registry.register("zero_incentive", _zero_builtin)
     registry.register("participation_first", _participation_first_builtin)
     registry.register("fairness_aware", _fairness_aware_builtin)
     return registry

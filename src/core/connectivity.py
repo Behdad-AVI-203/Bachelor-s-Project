@@ -42,7 +42,13 @@ class ConnectivityPolicy(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ProbabilisticConnectivityPolicy:
-    """Static probabilistic connectivity with deterministic hash-based draws."""
+    """Static probabilistic connectivity with deterministic hash-based draws.
+
+    Connectivity is evaluated when a device action attempts communication.
+    This is intentional for the current abstract model: a device that chooses
+    no action has no network transmission to deliver, while equivalent
+    attempts receive identical hash-derived conditions in both arms.
+    """
 
     random_seed: int = 0
     link_availability_probability: float = 1.0

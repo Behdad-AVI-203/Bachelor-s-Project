@@ -1,4 +1,11 @@
-"""Load user-provided Python functions behind a small, testable contract."""
+"""Load user-provided Python functions behind a small, testable contract.
+
+Custom plugins are expected to be deterministic for a given context. They
+should not use wall-clock time, global random state, external mutable state,
+or comparison-arm identifiers, and must not mutate shared experiment state.
+When stochastic behavior is needed, plugins should derive it from the
+deterministic values supplied in their context.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +18,23 @@ from typing import Any
 from .errors import PluginExecutionError, PluginValidationError
 
 PluginCallable = Callable[[Mapping[str, Any]], Any]
+
+PLUGIN_DETERMINISM_CONTRACT = (
+    "Plugins must be deterministic for an equivalent context; avoid wall-clock "
+    "time, global randomness, external mutable state, arm identity, and shared "
+    "state mutation."
+)
+
+
+def plugin_determinism_requirements() -> tuple[str, ...]:
+    """Return the user-facing determinism requirements for plugin authors."""
+    return (
+        "Be deterministic for a given plugin context.",
+        "Do not depend on wall-clock time or global random state.",
+        "Do not read or mutate external mutable state.",
+        "Do not inspect comparison-arm identity.",
+        "Do not mutate shared experiment state.",
+    )
 
 _SAFE_BUILTINS = {
     "abs": abs,

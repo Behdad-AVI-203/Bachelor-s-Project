@@ -50,6 +50,7 @@ class SimulationRepository:
                 "effective_seed": int(selected_seed),
                 "evaluation_configuration": {
                     "version": "1.0",
+                    "metric_definitions_version": "1.0",
                     "dimensions": [
                         "participation",
                         "retention",
@@ -64,8 +65,31 @@ class SimulationRepository:
                         "incentive_efficiency": 0.15,
                         "fairness": 0.15,
                     },
-                    "normalization": "pairwise_minmax",
+                    "normalization": "reference_range_clipped",
+                    "references": {
+                        "participation": {
+                            "baseline": 0.0,
+                            "scale": 1.0,
+                        },
+                        "retention": {
+                            "baseline": 0.0,
+                            "scale": 1.0,
+                        },
+                        "useful_contribution": {
+                            "baseline": 0.0,
+                            "scale": 1.0,
+                        },
+                        "incentive_efficiency": {
+                            "baseline": 0.0,
+                            "scale": 1.0,
+                        },
+                        "fairness": {
+                            "baseline": 0.0,
+                            "scale": 1.0,
+                        },
+                    },
                     "policy": "weighted_incentive_effectiveness",
+                    "policy_version": "2.0",
                 },
             }
 

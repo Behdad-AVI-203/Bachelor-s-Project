@@ -590,6 +590,12 @@ class SimulationEngine:
                 weights=(
                     evaluation_config or incentive_evaluation_configuration()
                 ).get("weights"),
+                references=(
+                    evaluation_config or incentive_evaluation_configuration()
+                ).get("references"),
+                normalization=(
+                    evaluation_config or incentive_evaluation_configuration()
+                ).get("normalization", "reference_range_clipped"),
             )
             network_score = weighted_score_comparison(
                 {"network_performance": metrics_by_category["network_performance"]},

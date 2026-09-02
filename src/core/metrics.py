@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from statistics import fmean, pvariance
+import math
 from typing import Any
 
 DEFAULT_COMPARISON_WEIGHTS = {
@@ -19,16 +20,30 @@ DEFAULT_INCENTIVE_DIMENSION_WEIGHTS = {
     "fairness": 0.15,
 }
 INCENTIVE_EVALUATION_CONFIG_VERSION = "1.0"
+INCENTIVE_EVALUATION_POLICY_VERSION = "2.0"
+DEFAULT_INCENTIVE_REFERENCE_VALUES = {
+    "participation": {"baseline": 0.0, "scale": 1.0},
+    "retention": {"baseline": 0.0, "scale": 1.0},
+    "useful_contribution": {"baseline": 0.0, "scale": 1.0},
+    "incentive_efficiency": {"baseline": 0.0, "scale": 1.0},
+    "fairness": {"baseline": 0.0, "scale": 1.0},
+}
 
 
 def incentive_evaluation_configuration() -> dict[str, Any]:
     """Return the immutable scoring policy used for new comparisons."""
     return {
         "version": INCENTIVE_EVALUATION_CONFIG_VERSION,
+        "metric_definitions_version": INCENTIVE_EVALUATION_CONFIG_VERSION,
         "dimensions": list(DEFAULT_INCENTIVE_DIMENSION_WEIGHTS),
         "weights": dict(DEFAULT_INCENTIVE_DIMENSION_WEIGHTS),
-        "normalization": "pairwise_minmax",
+        "normalization": "reference_range_clipped",
+        "references": {
+            key: dict(value)
+            for key, value in DEFAULT_INCENTIVE_REFERENCE_VALUES.items()
+        },
         "policy": "weighted_incentive_effectiveness",
+        "policy_version": INCENTIVE_EVALUATION_POLICY_VERSION,
     }
 
 
@@ -189,9 +204,14 @@ def weighted_incentive_effectiveness(
     metrics: Iterable[Mapping[str, Any]],
     *,
     weights: Mapping[str, float] | None = None,
+    references: Mapping[str, Mapping[str, float]] | None = None,
+    normalization: str = "reference_range_clipped",
 ) -> dict[str, Any]:
     """Score incentive arms using one normalized metric per outcome dimension."""
     configured = dict(weights or DEFAULT_INCENTIVE_DIMENSION_WEIGHTS)
+    configured_references = dict(
+        references or DEFAULT_INCENTIVE_REFERENCE_VALUES
+    )
     selected: dict[str, Mapping[str, Any]] = {}
     for metric in metrics:
         dimension = metric.get("details_json", {}).get("dimension")
@@ -200,21 +220,45 @@ def weighted_incentive_effectiveness(
 
     score_a = score_b = total_weight = 0.0
     dimensions: dict[str, dict[str, Any]] = {}
+    missing_dimensions: list[str] = []
     for dimension, metric in selected.items():
         weight = max(0.0, float(configured.get(dimension, 0.0)))
         value_a = metric.get("value_a")
         value_b = metric.get("value_b")
-        if weight == 0 or value_a is None or value_b is None:
+        if weight == 0:
+            continue
+        if value_a is None or value_b is None:
+            missing_dimensions.append(str(dimension))
             continue
         numeric_a, numeric_b = float(value_a), float(value_b)
-        if abs(numeric_a - numeric_b) < 1e-12:
-            normalized_a = normalized_b = 0.5
+        if not math.isfinite(numeric_a) or not math.isfinite(numeric_b):
+            missing_dimensions.append(str(dimension))
+            continue
+        if normalization == "pairwise_minmax":
+            if abs(numeric_a - numeric_b) < 1e-12:
+                normalized_a = normalized_b = 0.5
+            else:
+                low, high = min(numeric_a, numeric_b), max(numeric_a, numeric_b)
+                normalized_a = (numeric_a - low) / (high - low)
+                normalized_b = (numeric_b - low) / (high - low)
+                if metric.get("preferred_direction") == "lower":
+                    normalized_a, normalized_b = 1 - normalized_a, 1 - normalized_b
         else:
-            low, high = min(numeric_a, numeric_b), max(numeric_a, numeric_b)
-            normalized_a = (numeric_a - low) / (high - low)
-            normalized_b = (numeric_b - low) / (high - low)
+            reference = configured_references.get(
+                dimension, {"baseline": 0.0, "scale": 1.0}
+            )
+            scale = float(reference.get("scale", 0.0))
+            if scale <= 0:
+                raise ValueError(
+                    f"Reference scale for '{dimension}' must be positive."
+                )
+            baseline = float(reference.get("baseline", 0.0))
+            normalized_a = (numeric_a - baseline) / scale
+            normalized_b = (numeric_b - baseline) / scale
             if metric.get("preferred_direction") == "lower":
                 normalized_a, normalized_b = 1 - normalized_a, 1 - normalized_b
+            normalized_a = min(1.0, max(0.0, normalized_a))
+            normalized_b = min(1.0, max(0.0, normalized_b))
         score_a += weight * normalized_a
         score_b += weight * normalized_b
         total_weight += weight
@@ -238,5 +282,8 @@ def weighted_incentive_effectiveness(
         "score_b": score_b,
         "winner_slot": winner,
         "weights": configured,
+        "normalization": normalization,
+        "references": configured_references,
         "dimensions": dimensions,
+        "missing_dimensions": missing_dimensions,
     }
