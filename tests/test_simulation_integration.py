@@ -148,6 +148,101 @@ def test_replication_runner_executes_paired_seed_set(configured_database):
 
 
 @pytest.mark.integration
+def test_replication_single_seed_matches_normal_run(database):
+    environment_id = create_environment(database, device_count=3)
+    network_id = create_network(
+        database,
+        name="Equivalence network",
+        reward_code=None,
+        include_incentive_parameters=False,
+    )
+    incentive_a = database.configurations.create_incentive_config(
+        name="Equivalent A",
+        implementation_type="built_in",
+        built_in_key="default_reward",
+        parameters={"base_iot_reward": 1.0},
+    )
+    incentive_b = database.configurations.create_incentive_config(
+        name="Equivalent B",
+        implementation_type="built_in",
+        built_in_key="default_reward",
+        parameters={"base_iot_reward": 1.0},
+    )
+    experiment_id = database.configurations.create_experiment_config(
+        name="Equivalence experiment",
+        environment_id=environment_id,
+        network_config_id=network_id,
+        incentive_a_config_id=incentive_a,
+        incentive_b_config_id=incentive_b,
+        poisson_lambda=1.5,
+        duration_seconds=3,
+        sample_interval_ms=1_000,
+        default_random_seed=7,
+        traffic_mix={"iot_data": 1.0},
+    )
+    engine = SimulationEngine(database)
+    normal = engine.run_experiment(experiment_id, random_seed=77)
+    replicated = ReplicationRunner(engine).run(
+        ReplicationPlan(experiment_id, (77,)),
+    )
+    result = replicated.replications[0]
+    assert result.metrics_a["final_retention_rate"] == pytest.approx(
+        normal.network_summaries["A"]["custom_summary_json"][
+            "final_retention_rate"
+        ]
+    )
+    assert result.metrics_b["opportunity_participation_rate"] == pytest.approx(
+        normal.network_summaries["B"]["custom_summary_json"][
+            "opportunity_participation_rate"
+        ]
+    )
+
+
+@pytest.mark.integration
+def test_identical_incentive_control_has_no_winner_across_seeds(database):
+    environment_id = create_environment(database, device_count=3)
+    network_id = create_network(
+        database,
+        name="Control network",
+        reward_code=None,
+        include_incentive_parameters=False,
+    )
+    incentive_a = database.configurations.create_incentive_config(
+        name="Control A",
+        implementation_type="built_in",
+        built_in_key="default_reward",
+        parameters={"base_iot_reward": 1.0},
+    )
+    incentive_b = database.configurations.create_incentive_config(
+        name="Control B",
+        implementation_type="built_in",
+        built_in_key="default_reward",
+        parameters={"base_iot_reward": 1.0},
+    )
+    experiment_id = database.configurations.create_experiment_config(
+        name="Identical control",
+        environment_id=environment_id,
+        network_config_id=network_id,
+        incentive_a_config_id=incentive_a,
+        incentive_b_config_id=incentive_b,
+        poisson_lambda=2,
+        duration_seconds=3,
+        sample_interval_ms=1_000,
+        default_random_seed=9,
+        traffic_mix={"iot_data": 1.0},
+    )
+    summary = ReplicationRunner(SimulationEngine(database)).run(
+        ReplicationPlan(experiment_id, (1, 2, 3)),
+    )
+    assert summary.aggregate_winner == "TIE"
+    assert all(
+        metric.mean_difference == pytest.approx(0)
+        for metric in summary.metrics.values()
+        if metric.mean_difference is not None
+    )
+
+
+@pytest.mark.integration
 def test_incentive_comparison_simulation_shares_one_network(
     database,
 ):

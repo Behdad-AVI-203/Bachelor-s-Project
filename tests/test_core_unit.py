@@ -1214,6 +1214,22 @@ def test_metric_definitions_are_explicit_and_scoped():
     assert definitions["final_retention_rate"].participates_in_scoring
     assert definitions["throughput"].contextual_only
     assert not definitions["throughput"].participates_in_scoring
+    for name in (
+        "opportunity_participation_rate",
+        "final_retention_rate",
+        "useful_contribution_rate",
+        "useful_contribution_per_active_device",
+        "incentive_cost_per_useful_contribution",
+        "reward_distribution_fairness",
+        "average_net_utility_per_device",
+    ):
+        definition = definitions[name]
+        assert definition.numerator
+        assert definition.denominator
+        assert definition.direction in {"higher", "lower"}
+        assert definition.zero_denominator
+        assert definition.aggregation_window
+        assert definition.measurement_level
     assert "useful_contribution" in metric_semantics()
 
 

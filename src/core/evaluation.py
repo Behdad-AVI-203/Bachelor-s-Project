@@ -38,6 +38,8 @@ class MetricDefinition:
     rejected_actions: str = "Included only when specified by the metric."
     inactive_devices: str = "Included only when specified by the metric."
     aggregation_window: str = "Entire simulation run."
+    measurement_level: str = "experiment"
+    measurement_basis: str = "operational"
 
 
 PRIMARY_METRIC_DEFINITIONS = {
@@ -49,6 +51,7 @@ PRIMARY_METRIC_DEFINITIONS = {
         zero_denominator="0.0 when no opportunities occur",
         rejected_actions="count as participation because an action was attempted",
         inactive_devices="their opportunities remain in the denominator",
+        measurement_level="opportunity",
     ),
     "final_retention_rate": MetricDefinition(
         "final_retention_rate", "evaluation",
@@ -58,6 +61,7 @@ PRIMARY_METRIC_DEFINITIONS = {
         zero_denominator="0.0 when the environment has no devices",
         inactive_devices="included in the initial-device denominator",
         aggregation_window="final virtual-time state",
+        measurement_level="device",
     ),
     "useful_contribution_rate": MetricDefinition(
         "useful_contribution_rate", "evaluation",
@@ -68,6 +72,7 @@ PRIMARY_METRIC_DEFINITIONS = {
         ), zero_denominator="0.0 when no IoT-data opportunities occur",
         rejected_actions="never count as useful",
         inactive_devices="their IoT-data opportunities remain in the denominator",
+        measurement_level="opportunity",
     ),
     "useful_contribution_per_active_device": MetricDefinition(
         "useful_contribution_per_active_device", "evaluation",
@@ -76,6 +81,7 @@ PRIMARY_METRIC_DEFINITIONS = {
         False, False, numerator="operational useful contribution count",
         zero_denominator="0.0 when average active-device count is zero",
         inactive_devices="excluded from the sampled active-device denominator",
+        measurement_level="device",
     ),
     "incentive_cost_per_useful_contribution": MetricDefinition(
         "incentive_cost_per_useful_contribution", "evaluation",
@@ -84,6 +90,7 @@ PRIMARY_METRIC_DEFINITIONS = {
         True, False, numerator="total rewards minus total penalties",
         zero_denominator="None when no useful contributions occur",
         rejected_actions="may affect cost only if the incentive evaluates them",
+        measurement_level="device",
     ),
     "reward_distribution_fairness": MetricDefinition(
         "reward_distribution_fairness", "evaluation",
@@ -92,6 +99,7 @@ PRIMARY_METRIC_DEFINITIONS = {
         True, False, numerator="one minus Gini of cumulative rewards",
         zero_denominator="0.0 when total rewards are zero",
         inactive_devices="included with their observed cumulative reward",
+        measurement_level="device",
     ),
     "utility_distribution_fairness": MetricDefinition(
         "utility_distribution_fairness", "evaluation",
@@ -100,6 +108,7 @@ PRIMARY_METRIC_DEFINITIONS = {
         False, False, numerator="one minus Gini of cumulative net utility",
         zero_denominator="0.0 for an empty device population",
         inactive_devices="included with their observed cumulative utility",
+        measurement_level="device",
     ),
     "average_net_utility_per_device": MetricDefinition(
         "average_net_utility_per_device", "evaluation",
@@ -108,6 +117,7 @@ PRIMARY_METRIC_DEFINITIONS = {
         True, False, numerator="sum of cumulative device net utility",
         zero_denominator="0.0 for an empty device population",
         inactive_devices="included",
+        measurement_level="device",
     ),
     "non_negative_utility_rate": MetricDefinition(
         "non_negative_utility_rate", "evaluation",
@@ -116,6 +126,7 @@ PRIMARY_METRIC_DEFINITIONS = {
         False, False, numerator="devices with cumulative net utility >= 0",
         zero_denominator="0.0 for an empty device population",
         inactive_devices="included",
+        measurement_level="device",
     ),
     "average_active_device_ratio": MetricDefinition(
         "average_active_device_ratio", "device_behavior",
@@ -124,6 +135,7 @@ PRIMARY_METRIC_DEFINITIONS = {
         numerator="sum of sampled active-device ratios",
         zero_denominator="falls back to final retention when no samples exist",
         inactive_devices="included in each sample denominator",
+        measurement_level="device",
     ),
     "churn_rate": MetricDefinition(
         "churn_rate", "device_behavior", MetricCategory.DEVICE_BEHAVIOR,
@@ -132,21 +144,35 @@ PRIMARY_METRIC_DEFINITIONS = {
         zero_denominator="0.0 when the environment has no devices",
         inactive_devices="counted in the numerator",
         aggregation_window="final virtual-time state",
+        measurement_level="device",
     ),
     "total_rewards": MetricDefinition(
         "total_rewards", "evaluation", MetricCategory.INCENTIVE_EFFECTIVENESS,
         "lower", "sum", "not a ratio", False, False,
         numerator="sum of cumulative reward deltas across all devices",
+        measurement_level="device",
     ),
     "total_penalties": MetricDefinition(
         "total_penalties", "evaluation", MetricCategory.INCENTIVE_EFFECTIVENESS,
         "lower", "sum", "not a ratio", False, False,
         numerator="sum of cumulative penalty deltas across all devices",
+        measurement_level="device",
     ),
     "net_incentive_cost": MetricDefinition(
         "net_incentive_cost", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "lower", "sum", "not a ratio",
         False, False, numerator="total rewards minus total penalties",
+        measurement_level="device",
+    ),
+    "useful_contribution_count": MetricDefinition(
+        "useful_contribution_count", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "count",
+        "IoT-data opportunities", False, False,
+        numerator="accepted IoT-data outcomes meeting the operational rule",
+        zero_denominator="0 when no IoT-data opportunities occur",
+        rejected_actions="never count as useful",
+        inactive_devices="their opportunities remain in the denominator",
+        measurement_level="opportunity",
     ),
 }
 
