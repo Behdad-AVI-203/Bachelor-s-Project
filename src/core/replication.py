@@ -41,6 +41,7 @@ class ReplicationResult:
     metrics_b: Mapping[str, float | None]
     execution: SimulationExecutionResult
     metric_set_version: str = "1.0"
+    exogenous_fingerprint: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +117,7 @@ class ReplicationRunner:
                         .get("evaluation_configuration", {})
                         .get("metric_definitions_version", "1.0")
                     ),
+                    exogenous_fingerprint=execution.exogenous_fingerprint,
                 )
             )
         summaries = {

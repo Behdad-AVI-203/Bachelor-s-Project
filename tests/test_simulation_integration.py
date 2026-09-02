@@ -243,6 +243,117 @@ def test_identical_incentive_control_has_no_winner_across_seeds(database):
 
 
 @pytest.mark.integration
+def test_zero_incentive_control_exercises_registry_and_metric_effects(database):
+    environment_id = create_environment(database, device_count=4)
+    network_id = create_network(
+        database,
+        name="Zero control network",
+        reward_code=None,
+        include_incentive_parameters=False,
+    )
+    zero_id = database.configurations.create_incentive_config(
+        name="Zero",
+        implementation_type="built_in",
+        built_in_key="zero_incentive",
+    )
+    active_id = database.configurations.create_incentive_config(
+        name="Participation",
+        implementation_type="built_in",
+        built_in_key="participation_first",
+        parameters={"participation_bonus": 0.5},
+    )
+    experiment_id = database.configurations.create_experiment_config(
+        name="Zero baseline",
+        environment_id=environment_id,
+        network_config_id=network_id,
+        incentive_a_config_id=zero_id,
+        incentive_b_config_id=active_id,
+        poisson_lambda=3,
+        duration_seconds=5,
+        sample_interval_ms=1_000,
+        default_random_seed=31,
+        traffic_mix={"iot_data": 1.0},
+    )
+    result = SimulationEngine(database).run_experiment(
+        experiment_id,
+        random_seed=31,
+    )
+    summary = result.comparison["summary_json"]
+    zero = result.network_summaries["A"]["custom_summary_json"]
+    active = result.network_summaries["B"]["custom_summary_json"]
+    assert summary["comparison_model"] == "incentive_mechanisms"
+    assert summary["network_performance"] == summary["network_context_score"]
+    assert zero["total_rewards"] == 0
+    assert active["total_rewards"] >= 0
+    assert "network_performance" not in summary[
+        "incentive_effectiveness"
+    ].get("dimensions", {})
+
+
+@pytest.mark.integration
+def test_connectivity_sensitivity_changes_context_not_scoring_inputs(database):
+    environment_id = create_environment(database, device_count=3)
+    first_network = create_network(
+        database,
+        name="Reliable network",
+        reward_code=None,
+        include_incentive_parameters=False,
+        parameters={
+            "link_availability_probability": 1.0,
+            "packet_delivery_success_probability": 1.0,
+        },
+    )
+    second_network = create_network(
+        database,
+        name="Unreliable network",
+        reward_code=None,
+        include_incentive_parameters=False,
+        parameters={
+            "link_availability_probability": 0.0,
+            "packet_delivery_success_probability": 1.0,
+        },
+    )
+    incentive_a = database.configurations.create_incentive_config(
+        name="Sensitivity A",
+        implementation_type="built_in",
+        built_in_key="default_reward",
+    )
+    incentive_b = database.configurations.create_incentive_config(
+        name="Sensitivity B",
+        implementation_type="built_in",
+        built_in_key="participation_first",
+    )
+    def create_experiment(network_id, name):
+        return database.configurations.create_experiment_config(
+            name=name,
+            environment_id=environment_id,
+            network_config_id=network_id,
+            incentive_a_config_id=incentive_a,
+            incentive_b_config_id=incentive_b,
+            poisson_lambda=3,
+            duration_seconds=4,
+            sample_interval_ms=1_000,
+            default_random_seed=19,
+            traffic_mix={"iot_data": 1.0},
+        )
+    reliable = SimulationEngine(database).run_experiment(
+        create_experiment(first_network, "Reliable"),
+        random_seed=19,
+    )
+    unreliable = SimulationEngine(database).run_experiment(
+        create_experiment(second_network, "Unreliable"),
+        random_seed=19,
+    )
+    assert reliable.exogenous_fingerprint != unreliable.exogenous_fingerprint
+    assert reliable.comparison["summary_json"]["network_context_score"] != (
+        unreliable.comparison["summary_json"]["network_context_score"]
+    )
+    assert "network_performance" not in reliable.comparison[
+        "summary_json"
+    ]["incentive_effectiveness"].get("dimensions", {})
+
+
+@pytest.mark.integration
 def test_incentive_comparison_simulation_shares_one_network(
     database,
 ):

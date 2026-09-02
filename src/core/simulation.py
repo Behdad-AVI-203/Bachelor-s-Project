@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+import hashlib
+import json
 from typing import Any
 
 from src.database import DatabaseService
@@ -62,6 +64,7 @@ class SimulationExecutionResult:
     final_virtual_time_ms: int
     network_summaries: dict[str, dict[str, Any]]
     comparison: dict[str, Any]
+    exogenous_fingerprint: str = ""
 
 
 ProgressCallback = Callable[[SimulationProgress], None]
@@ -240,6 +243,12 @@ class SimulationEngine:
                 final_virtual_time_ms=final_virtual_time,
                 network_summaries=summaries,
                 comparison=comparison,
+                exogenous_fingerprint=self._exogenous_fingerprint(
+                    run,
+                    device_rows,
+                    network_rows,
+                    opportunities,
+                ),
             )
         except Exception as exc:
             self._mark_failed(simulation_id, network_ids, exc)
@@ -663,6 +672,63 @@ class SimulationEngine:
                     experiment.get("comparison_model", "legacy_networks")
                 )
         return "legacy_networks"
+
+    @staticmethod
+    def _exogenous_fingerprint(
+        run: Mapping[str, Any],
+        device_rows: Sequence[Mapping[str, Any]],
+        network_rows: Sequence[Mapping[str, Any]],
+        opportunities: Sequence[ExternalOpportunity],
+    ) -> str:
+        """Hash shared run inputs, excluding incentive and arm identities."""
+        network_configs = []
+        for row in network_rows:
+            snapshot = row.get("configuration_snapshot_json", {})
+            if isinstance(snapshot, Mapping):
+                network_configs.append(snapshot.get("network", snapshot))
+        payload = {
+            "effective_seed": run.get("random_seed"),
+            "experiment": {
+                key: run.get("configuration_snapshot_json", {})
+                .get("experiment", {})
+                .get(key)
+                for key in (
+                    "comparison_model",
+                    "poisson_lambda",
+                    "duration_seconds",
+                    "sample_interval_ms",
+                    "traffic_mix",
+                    "parameters",
+                )
+            },
+            "environment_devices": [
+                {
+                    key: device.get(key)
+                    for key in (
+                        "device_key",
+                        "group_name",
+                        "precision",
+                        "data_rate",
+                        "execution_cost",
+                        "profit_expectation",
+                        "initial_balance",
+                    )
+                }
+                for device in device_rows
+            ],
+            "network_configurations": network_configs,
+            "opportunities": [
+                opportunity.to_plugin_context()
+                for opportunity in opportunities
+            ],
+        }
+        canonical = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _evaluation_config(
