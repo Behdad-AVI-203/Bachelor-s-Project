@@ -388,6 +388,13 @@ class SimulationArmRuntime:
         if useful is None:
             useful = incentive_outcome.details.get("useful")
         if useful is None:
+            # Built-in incentive mechanisms (participation_first,
+            # fairness_aware) return contribution_delta=1.0 for every
+            # accepted IoT-data action without an independent
+            # data-quality assessment. The classification tracks
+            # mechanism-credited contribution, not objective sensor
+            # usefulness. Custom plugins may override via
+            # details.useful_contribution or details.useful.
             useful = contribution_delta > 0
         if bool(useful):
             state.useful_contribution_count += 1

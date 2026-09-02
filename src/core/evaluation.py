@@ -56,7 +56,10 @@ PRIMARY_METRIC_DEFINITIONS = {
     "final_retention_rate": MetricDefinition(
         "final_retention_rate", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "final_ratio",
-        "all enabled devices; active at final virtual time",
+        (
+            "all enabled devices; endpoint retention at final virtual time "
+            "(not a time-average survival rate)"
+        ),
         True, False, numerator="devices active at final virtual time",
         zero_denominator="0.0 when the environment has no devices",
         inactive_devices="included in the initial-device denominator",
@@ -66,9 +69,17 @@ PRIMARY_METRIC_DEFINITIONS = {
     "useful_contribution_rate": MetricDefinition(
         "useful_contribution_rate", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "ratio",
-        "IoT-data opportunities; operational usefulness rule",
+        (
+            "IoT-data opportunities; mechanism-credited usefulness "
+            "(defaults to contribution_delta > 0 for every accepted "
+            "IoT-data action)"
+        ),
         True, False, numerator=(
-            "accepted IoT-data actions satisfying the operational usefulness rule"
+            (
+                "accepted IoT-data actions where the incentive mechanism "
+                "signals a positive contribution_delta (or "
+                "details.useful_contribution)"
+            )
         ), zero_denominator="0.0 when no IoT-data opportunities occur",
         rejected_actions="never count as useful",
         inactive_devices="their IoT-data opportunities remain in the denominator",
@@ -78,7 +89,7 @@ PRIMARY_METRIC_DEFINITIONS = {
         "useful_contribution_per_active_device", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "ratio",
         "average active devices over sampled virtual time",
-        False, False, numerator="operational useful contribution count",
+        False, False, numerator="mechanism-credited useful contribution count",
         zero_denominator="0.0 when average active-device count is zero",
         inactive_devices="excluded from the sampled active-device denominator",
         measurement_level="device",
@@ -86,8 +97,12 @@ PRIMARY_METRIC_DEFINITIONS = {
     "incentive_cost_per_useful_contribution": MetricDefinition(
         "incentive_cost_per_useful_contribution", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "lower", "ratio",
-        "useful contribution count",
-        True, False, numerator="total rewards minus total penalties",
+        "mechanism-credited useful contribution count",
+        True, False, numerator=(
+            "total rewards (gross expenditure); the separate "
+            "legacy_incentive_cost_per_useful_contribution field subtracts "
+            "penalties"
+        ),
         zero_denominator="None when no useful contributions occur",
         rejected_actions="may affect cost only if the incentive evaluates them",
         measurement_level="device",
@@ -104,17 +119,28 @@ PRIMARY_METRIC_DEFINITIONS = {
     "utility_distribution_fairness": MetricDefinition(
         "utility_distribution_fairness", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "gini_complement",
-        "all enabled devices, including inactive devices",
-        False, False, numerator="one minus Gini of cumulative net utility",
+        (
+            "all enabled devices, including inactive devices; "
+            "profit = cumulative_reward - cumulative_penalties - cumulative_cost"
+        ),
+        False, False, numerator=(
+            "one minus Gini of cumulative profit (non-negative clipped)"
+        ),
         zero_denominator="0.0 for an empty device population",
-        inactive_devices="included with their observed cumulative utility",
+        inactive_devices="included with their observed cumulative profit",
         measurement_level="device",
     ),
     "average_net_utility_per_device": MetricDefinition(
         "average_net_utility_per_device", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "mean",
-        "all enabled devices",
-        False, False, numerator="sum of cumulative device net utility",
+        (
+            "all enabled devices; net profit = cumulative_reward "
+            "- cumulative_penalties - cumulative_cost"
+        ),
+        False, False, numerator=(
+            "sum of cumulative device net profit "
+            "(reward - penalties - execution cost - transaction fees)"
+        ),
         zero_denominator="0.0 for an empty device population",
         inactive_devices="included",
         measurement_level="device",
@@ -122,8 +148,13 @@ PRIMARY_METRIC_DEFINITIONS = {
     "non_negative_utility_rate": MetricDefinition(
         "non_negative_utility_rate", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "ratio",
-        "all enabled devices",
-        False, False, numerator="devices with cumulative net utility >= 0",
+        (
+            "all enabled devices; net profit = cumulative_reward "
+            "- cumulative_penalties - cumulative_cost"
+        ),
+        False, False, numerator=(
+            "devices with cumulative net profit >= 0"
+        ),
         zero_denominator="0.0 for an empty device population",
         inactive_devices="included",
         measurement_level="device",
@@ -139,8 +170,9 @@ PRIMARY_METRIC_DEFINITIONS = {
     ),
     "churn_rate": MetricDefinition(
         "churn_rate", "device_behavior", MetricCategory.DEVICE_BEHAVIOR,
-        "lower", "final_ratio", "all enabled devices", False, False,
-        numerator="devices inactive at final virtual time",
+        "lower", "final_ratio",
+        "all enabled devices; endpoint churn (not a survival rate)", False, False,
+        numerator="devices inactive at final virtual time (1 - final_retention_rate)",
         zero_denominator="0.0 when the environment has no devices",
         inactive_devices="counted in the numerator",
         aggregation_window="final virtual-time state",
@@ -162,7 +194,10 @@ PRIMARY_METRIC_DEFINITIONS = {
         "net_incentive_cost", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "lower", "sum", "not a ratio",
         False, False, numerator=(
-            "reward expenditure; compatibility alias retained for exports"
+            (
+                "total rewards (gross expenditure, not net of penalties); "
+                "compatibility alias retained for exports"
+            )
         ),
         measurement_level="device",
     ),
@@ -182,8 +217,15 @@ PRIMARY_METRIC_DEFINITIONS = {
     "useful_contribution_count": MetricDefinition(
         "useful_contribution_count", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "count",
-        "IoT-data opportunities", False, False,
-        numerator="accepted IoT-data outcomes meeting the operational rule",
+        (
+            "IoT-data opportunities; mechanism-credited (not an independent "
+            "data-quality assessment)"
+        ), False, False,
+        numerator=(
+            "accepted IoT-data outcomes where the incentive mechanism "
+            "reports details.useful_contribution, details.useful, or "
+            "contribution_delta > 0"
+        ),
         zero_denominator="0 when no IoT-data opportunities occur",
         rejected_actions="never count as useful",
         inactive_devices="their opportunities remain in the denominator",
@@ -347,6 +389,10 @@ class IncentiveEvaluationAccumulator:
         utility_fairness = 1.0 - gini_coefficient(
             state.cumulative_profit for state in device_states
         )
+        #  gini_coefficient silently clamps negative cumulative profit
+        #  to zero before computing inequality. This means
+        #  utility_distribution_fairness measures fairness over the
+        #  non-negative portion of device economic balances only.
         utilities = [state.cumulative_profit for state in device_states]
         average_utility = (
             fmean(utilities) if utilities else 0.0

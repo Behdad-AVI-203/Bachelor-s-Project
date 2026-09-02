@@ -451,7 +451,7 @@ class SimulationEngine:
             ),
             (
                 "final_retention_rate",
-                "Final retention rate",
+                "Final retention rate (endpoint)",
                 "final_retention_rate",
                 "higher",
                 "ratio",
@@ -472,28 +472,28 @@ class SimulationEngine:
             ),
             (
                 "churn_rate",
-                "Churn rate",
+                "Endpoint churn rate",
                 "churn_rate",
                 "lower",
                 "ratio",
             ),
             (
                 "useful_contribution_count",
-                "Useful contributions",
+                "Mechanism-credited contributions",
                 "useful_contribution_count",
                 "higher",
                 "contributions",
             ),
             (
                 "useful_contribution_rate",
-                "Useful contribution rate",
+                "Mechanism-credited contribution rate",
                 "useful_contribution_rate",
                 "higher",
                 "ratio",
             ),
             (
                 "useful_contribution_per_active_device",
-                "Useful contributions per active device",
+                "Mechanism-credited contributions per active device",
                 "useful_contribution_per_active_device",
                 "higher",
                 "contributions/device",
@@ -513,27 +513,31 @@ class SimulationEngine:
                 "currency",
             ),
             (
-                "net_incentive_cost",
-                "Net incentive cost",
-                (
-                    "legacy_net_incentive_cost"
-                    if legacy_comparison
-                    else "net_incentive_cost"
-                ),
-                "lower",
-                "currency",
-            ),
-            (
-                "incentive_cost_per_useful_contribution",
-                "Incentive cost per useful contribution",
-                (
-                    "legacy_incentive_cost_per_useful_contribution"
-                    if legacy_comparison
-                    else "incentive_cost_per_useful_contribution"
-                ),
-                "lower",
-                "currency/contribution",
-            ),
+        "net_incentive_cost",
+        "Reward expenditure" if not legacy_comparison else "Net incentive cost",
+        (
+            "legacy_net_incentive_cost"
+            if legacy_comparison
+            else "net_incentive_cost"
+        ),
+        "lower",
+        "currency",
+    ),
+    (
+        "incentive_cost_per_useful_contribution",
+        (
+            "Reward expenditure per mechanism-credited contribution"
+            if not legacy_comparison
+            else "Incentive cost per useful contribution"
+        ),
+        (
+            "legacy_incentive_cost_per_useful_contribution"
+            if legacy_comparison
+            else "incentive_cost_per_useful_contribution"
+        ),
+        "lower",
+        "currency/contribution",
+    ),
             (
                 "reward_distribution_fairness",
                 "Reward distribution fairness",
@@ -542,12 +546,12 @@ class SimulationEngine:
                 "ratio",
             ),
             (
-                "utility_distribution_fairness",
-                "Utility distribution fairness",
-                "utility_distribution_fairness",
-                "higher",
-                "ratio",
-            ),
+        "utility_distribution_fairness",
+        "Profit distribution fairness (device economic balance)",
+        "utility_distribution_fairness",
+        "higher",
+        "ratio",
+    ),
         ]
         metric_groups = {
             "network_performance": network_metric_specs,
