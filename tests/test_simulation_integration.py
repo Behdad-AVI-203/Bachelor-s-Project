@@ -7,7 +7,13 @@ from time import perf_counter
 
 import pytest
 
-from src.core import PluginExecutionError, SimulationEngine, SimulationError
+from src.core import (
+    PluginExecutionError,
+    ReplicationPlan,
+    ReplicationRunner,
+    SimulationEngine,
+    SimulationError,
+)
 
 from .factories import (
     DEFAULT_REWARD_CODE,
@@ -127,6 +133,18 @@ def test_incentive_run_snapshots_seed_and_evaluation_configuration(
     assert execution["evaluation_configuration"]["policy"] == (
         "weighted_incentive_effectiveness"
     )
+
+
+@pytest.mark.integration
+def test_replication_runner_executes_paired_seed_set(configured_database):
+    database, identifiers = configured_database
+    result = ReplicationRunner(SimulationEngine(database)).run(
+        ReplicationPlan(identifiers["experiment_id"], (11, 22)),
+    )
+    assert result.seeds == (11, 22)
+    assert len(result.replications) == 2
+    assert result.metrics["final_retention_rate"].replication_count == 2
+    assert result.metrics["final_retention_rate"].mean_difference is not None
 
 
 @pytest.mark.integration

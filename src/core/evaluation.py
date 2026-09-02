@@ -4,11 +4,133 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import StrEnum
+from math import sqrt
+from statistics import fmean, stdev
 from typing import Any
 
 from .incentives import IncentiveOutcome
 from .metrics import gini_coefficient
 from .models import NetworkDeviceState, TransactionType
+
+
+class MetricCategory(StrEnum):
+    INCENTIVE_EFFECTIVENESS = "incentive_effectiveness"
+    DEVICE_BEHAVIOR = "device_behavior"
+    NETWORK_CONTEXT = "network_context"
+
+
+@dataclass(frozen=True, slots=True)
+class MetricDefinition:
+    """Authoritative semantic and scoring metadata for one metric."""
+
+    name: str
+    owner: str
+    category: MetricCategory
+    direction: str
+    aggregation: str
+    denominator: str
+    participates_in_scoring: bool
+    contextual_only: bool
+    version: str = "1.0"
+
+
+PRIMARY_METRIC_DEFINITIONS = {
+    "opportunity_participation_rate": MetricDefinition(
+        "opportunity_participation_rate", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "ratio",
+        "all external opportunities; rejected actions count as participation",
+        True, False,
+    ),
+    "final_retention_rate": MetricDefinition(
+        "final_retention_rate", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "final_ratio",
+        "all enabled devices; active at final virtual time",
+        True, False,
+    ),
+    "useful_contribution_rate": MetricDefinition(
+        "useful_contribution_rate", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "ratio",
+        "IoT-data opportunities; operational usefulness rule",
+        True, False,
+    ),
+    "useful_contribution_per_active_device": MetricDefinition(
+        "useful_contribution_per_active_device", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "ratio",
+        "average active devices over sampled virtual time",
+        False, False,
+    ),
+    "incentive_cost_per_useful_contribution": MetricDefinition(
+        "incentive_cost_per_useful_contribution", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "lower", "ratio",
+        "useful contribution count",
+        True, False,
+    ),
+    "reward_distribution_fairness": MetricDefinition(
+        "reward_distribution_fairness", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "gini_complement",
+        "all enabled devices, including inactive and zero-reward devices",
+        True, False,
+    ),
+    "utility_distribution_fairness": MetricDefinition(
+        "utility_distribution_fairness", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "gini_complement",
+        "all enabled devices, including inactive devices",
+        False, False,
+    ),
+    "average_net_utility_per_device": MetricDefinition(
+        "average_net_utility_per_device", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "mean",
+        "all enabled devices",
+        True, False,
+    ),
+    "non_negative_utility_rate": MetricDefinition(
+        "non_negative_utility_rate", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "ratio",
+        "all enabled devices",
+        False, False,
+    ),
+}
+
+METRIC_DEFINITIONS = {
+    **PRIMARY_METRIC_DEFINITIONS,
+    "throughput": MetricDefinition(
+        "throughput", "network", MetricCategory.NETWORK_CONTEXT,
+        "higher", "mean", "virtual duration", False, True,
+    ),
+    "confirmation_latency": MetricDefinition(
+        "confirmation_latency", "network", MetricCategory.NETWORK_CONTEXT,
+        "lower", "mean", "confirmed actions", False, True,
+    ),
+}
+
+
+def metric_definitions() -> dict[str, MetricDefinition]:
+    """Return a copy of the authoritative metric registry."""
+    return dict(METRIC_DEFINITIONS)
+
+
+def metric_semantics() -> dict[str, str]:
+    """Return concise operational definitions for research documentation."""
+    return {
+        "useful_contribution": (
+            "An accepted IoT-data outcome with contribution_delta > 0, "
+            "unless the selected mechanism explicitly supplies "
+            "details.useful_contribution."
+        ),
+        "incentive_cost": (
+            "Rewards minus penalties; penalties are transfers to the device "
+            "ledger, not assumed system savings."
+        ),
+        "fairness": (
+            "One minus the non-negative Gini coefficient over all enabled "
+            "devices. Equal zero rewards are reported as undefined-success "
+            "fairness (0.0) rather than success."
+        ),
+        "utility": (
+            "Cumulative rewards minus penalties minus device execution cost."
+        ),
+    }
 
 
 @dataclass(slots=True)
@@ -113,8 +235,19 @@ class IncentiveEvaluationAccumulator:
         reward_fairness = 1.0 - gini_coefficient(
             state.cumulative_reward for state in device_states
         )
+        if total_rewards == 0:
+            reward_fairness = 0.0
         utility_fairness = 1.0 - gini_coefficient(
             state.cumulative_profit for state in device_states
+        )
+        utilities = [state.cumulative_profit for state in device_states]
+        average_utility = (
+            fmean(utilities) if utilities else 0.0
+        )
+        non_negative_utility_rate = (
+            sum(utility >= 0 for utility in utilities) / device_count
+            if device_count
+            else 0.0
         )
 
         return {
@@ -131,5 +264,7 @@ class IncentiveEvaluationAccumulator:
             "incentive_cost_per_useful_contribution": cost_per_useful,
             "reward_distribution_fairness": reward_fairness,
             "utility_distribution_fairness": utility_fairness,
+            "average_net_utility_per_device": average_utility,
+            "non_negative_utility_rate": non_negative_utility_rate,
             "incentive_evaluation_count": self.incentive_evaluations,
         }

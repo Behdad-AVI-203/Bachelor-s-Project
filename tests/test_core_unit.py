@@ -34,11 +34,14 @@ from src.core import (
     ProbabilisticConnectivityPolicy,
     ProfitExpectationBehavior,
     RewardIncentiveMechanism,
+    ReplicationPlan,
     SimulationArmRuntime,
     SimulationEvent,
     TransactionStatus,
     TransactionType,
 )
+from src.core.replication import _summarize_metric
+from src.core.evaluation import metric_definitions, metric_semantics
 from src.core.incentives import default_incentive_registry
 from src.core.simulation import SimulationEngine
 from src.core.metrics import (
@@ -1170,3 +1173,34 @@ def test_metric_calculations():
     assert gini_coefficient([10, 10, 10]) == pytest.approx(0)
     assert gini_coefficient([0, 10]) == pytest.approx(0.5)
     assert balance_variance([0, 10]) == pytest.approx(25)
+
+
+def test_metric_definitions_are_explicit_and_scoped():
+    definitions = metric_definitions()
+    assert definitions["final_retention_rate"].participates_in_scoring
+    assert definitions["throughput"].contextual_only
+    assert not definitions["throughput"].participates_in_scoring
+    assert "useful_contribution" in metric_semantics()
+
+
+def test_paired_statistics_cover_single_zero_and_missing_values():
+    single = _summarize_metric("x", [2.0], [1.0])
+    assert single.mean_difference == pytest.approx(1.0)
+    assert single.standard_deviation_difference == 0
+    assert single.confidence_interval_95 == (1.0, 1.0)
+
+    zero = _summarize_metric("x", [1.0, 1.0], [1.0, 1.0])
+    assert zero.mean_difference == 0
+    assert zero.effect_size == 0
+
+    missing = _summarize_metric("x", [None], [1.0])
+    assert missing.replication_count == 0
+    assert missing.mean_difference is None
+
+
+def test_replication_plan_requires_unique_nonempty_seeds():
+    assert ReplicationPlan(1, (1, 2)).seeds == (1, 2)
+    with pytest.raises(ValueError):
+        ReplicationPlan(1, ())
+    with pytest.raises(ValueError):
+        ReplicationPlan(1, (1, 1))

@@ -60,6 +60,13 @@ from .network import (
     NetworkOutcome,
 )
 from .orchestration import SimulationArmRuntime
+from .replication import (
+    PairedMetricSummary,
+    ReplicationPlan,
+    ReplicationResult,
+    ReplicationRunner,
+    ReplicationSummary,
+)
 from .simulation import (
     SimulationEngine,
     SimulationExecutionResult,
@@ -109,6 +116,11 @@ __all__ = [
     "SimulationEngine",
     "SimulationArmRuntime",
     "SimulationError",
+    "ReplicationPlan",
+    "ReplicationResult",
+    "ReplicationRunner",
+    "ReplicationSummary",
+    "PairedMetricSummary",
     "SimulationEvent",
     "SimulationExecutionResult",
     "SimulationProgress",
