@@ -66,6 +66,7 @@ from .replication import (
     ReplicationResult,
     ReplicationRunner,
     ReplicationSummary,
+    ResolvedReplicationPlan,
 )
 from .simulation import (
     SimulationEngine,
@@ -120,6 +121,7 @@ __all__ = [
     "ReplicationResult",
     "ReplicationRunner",
     "ReplicationSummary",
+    "ResolvedReplicationPlan",
     "PairedMetricSummary",
     "SimulationEvent",
     "SimulationExecutionResult",

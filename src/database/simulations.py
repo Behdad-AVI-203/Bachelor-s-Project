@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from copy import deepcopy
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -30,11 +31,16 @@ class SimulationRepository:
         *,
         name: str | None = None,
         random_seed: int | None = None,
+        configuration_snapshot: Mapping[str, Any] | None = None,
     ) -> Record:
         """Snapshot an experiment and create its A/B runtime records."""
-        snapshot = self.configurations.export_configuration(
-            "full",
-            experiment_config_id,
+        snapshot = (
+            deepcopy(configuration_snapshot)
+            if configuration_snapshot is not None
+            else self.configurations.export_configuration(
+                "full",
+                experiment_config_id,
+            )
         )
         experiment = snapshot["experiment"]
         environment_bundle = snapshot["environment_bundle"]
@@ -45,10 +51,12 @@ class SimulationRepository:
             selected_seed = secrets.randbits(63)
         if experiment.get("comparison_model") == "incentive_mechanisms":
             snapshot = dict(snapshot)
-            snapshot["execution"] = {
-                **dict(snapshot.get("execution") or {}),
-                "effective_seed": int(selected_seed),
-                "evaluation_configuration": {
+            existing_execution = dict(snapshot.get("execution") or {})
+            evaluation_configuration = existing_execution.get(
+                "evaluation_configuration"
+            )
+            if not isinstance(evaluation_configuration, Mapping):
+                evaluation_configuration = {
                     "version": "1.0",
                     "metric_definitions_version": "1.0",
                     "dimensions": [
@@ -90,7 +98,13 @@ class SimulationRepository:
                     },
                     "policy": "weighted_incentive_effectiveness",
                     "policy_version": "2.0",
-                },
+                }
+            snapshot["execution"] = {
+                **existing_execution,
+                "effective_seed": int(selected_seed),
+                "evaluation_configuration": deepcopy(
+                    evaluation_configuration
+                ),
             }
 
         with self.database.transaction() as connection:

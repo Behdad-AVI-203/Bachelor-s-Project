@@ -103,12 +103,14 @@ class SimulationEngine:
         name: str | None = None,
         random_seed: int | None = None,
         progress_callback: ProgressCallback | None = None,
+        configuration_snapshot: Mapping[str, Any] | None = None,
     ) -> SimulationExecutionResult:
         """Create and execute a fresh run from a saved experiment."""
         run = self.database.simulations.create_run_from_experiment(
             experiment_config_id,
             name=name,
             random_seed=random_seed,
+            configuration_snapshot=configuration_snapshot,
         )
         return self.run_simulation(
             run["simulation_id"],
@@ -394,6 +396,7 @@ class SimulationEngine:
     ) -> dict[str, Any]:
         summary_a = summaries["A"]
         summary_b = summaries["B"]
+        legacy_comparison = comparison_model == "legacy_networks"
         network_metric_specs = [
             (
                 "confirmed_transactions",
@@ -512,14 +515,22 @@ class SimulationEngine:
             (
                 "net_incentive_cost",
                 "Net incentive cost",
-                "net_incentive_cost",
+                (
+                    "legacy_net_incentive_cost"
+                    if legacy_comparison
+                    else "net_incentive_cost"
+                ),
                 "lower",
                 "currency",
             ),
             (
                 "incentive_cost_per_useful_contribution",
                 "Incentive cost per useful contribution",
-                "incentive_cost_per_useful_contribution",
+                (
+                    "legacy_incentive_cost_per_useful_contribution"
+                    if legacy_comparison
+                    else "incentive_cost_per_useful_contribution"
+                ),
                 "lower",
                 "currency/contribution",
             ),
@@ -681,15 +692,24 @@ class SimulationEngine:
         opportunities: Sequence[ExternalOpportunity],
     ) -> str:
         """Hash shared run inputs, excluding incentive and arm identities."""
-        network_configs = []
-        for row in network_rows:
-            snapshot = row.get("configuration_snapshot_json", {})
-            if isinstance(snapshot, Mapping):
-                network_configs.append(snapshot.get("network", snapshot))
+        del network_rows
+        snapshot = run.get("configuration_snapshot_json", {})
+        comparison_model = (
+            snapshot.get("experiment", {}).get("comparison_model")
+            if isinstance(snapshot, Mapping)
+            else None
+        )
+        if comparison_model == "incentive_mechanisms":
+            network_configuration = snapshot.get("network_bundle", {})
+        else:
+            network_configuration = {
+                "network_a": snapshot.get("network_a_bundle", {}),
+                "network_b": snapshot.get("network_b_bundle", {}),
+            }
         payload = {
             "effective_seed": run.get("random_seed"),
             "experiment": {
-                key: run.get("configuration_snapshot_json", {})
+                key: snapshot
                 .get("experiment", {})
                 .get(key)
                 for key in (
@@ -697,38 +717,80 @@ class SimulationEngine:
                     "poisson_lambda",
                     "duration_seconds",
                     "sample_interval_ms",
-                    "traffic_mix",
-                    "parameters",
+                    "traffic_mix_json",
+                    "parameters_json",
                 )
             },
             "environment_devices": [
                 {
-                    key: device.get(key)
-                    for key in (
-                        "device_key",
-                        "group_name",
-                        "precision",
-                        "data_rate",
-                        "execution_cost",
-                        "profit_expectation",
-                        "initial_balance",
-                    )
+                    **{
+                        key: device.get(key)
+                        for key in (
+                            "device_key",
+                            "group_name",
+                            "precision",
+                            "data_rate",
+                            "execution_cost",
+                            "profit_expectation",
+                            "initial_balance",
+                        )
+                    },
+                    "behavior": device.get("behavior_snapshot_json", {}),
                 }
                 for device in device_rows
             ],
-            "network_configurations": network_configs,
+            "network_configuration": network_configuration,
             "opportunities": [
-                opportunity.to_plugin_context()
+                {
+                    "sequence_number": opportunity.sequence_number,
+                    "scheduled_at_ms": opportunity.scheduled_at_ms,
+                    "event_type": opportunity.event_type.value,
+                    "sender_device_key": opportunity.sender_device_key,
+                    "target_device_key": opportunity.target_device_key,
+                    "amount": opportunity.amount,
+                    "payload": opportunity.payload,
+                }
                 for opportunity in opportunities
             ],
         }
         canonical = json.dumps(
-            payload,
+            SimulationEngine._fingerprint_value(payload),
             sort_keys=True,
             separators=(",", ":"),
             default=str,
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _fingerprint_value(value: Any) -> Any:
+        """Remove persistence-only identity and volatile timestamp fields."""
+        if isinstance(value, Mapping):
+            return {
+                key: SimulationEngine._fingerprint_value(item)
+                for key, item in value.items()
+                if key not in {
+                    "id",
+                    "environment_id",
+                    "behavior_id",
+                    "network_config_id",
+                    "network_a_config_id",
+                    "network_b_config_id",
+                    "incentive_a_config_id",
+                    "incentive_b_config_id",
+                    "reward_artifact_id",
+                    "blockchain_logic_artifact_id",
+                    "code_artifact_id",
+                    "created_at",
+                    "updated_at",
+                    "exported_at",
+                }
+            }
+        if isinstance(value, list):
+            return [
+                SimulationEngine._fingerprint_value(item)
+                for item in value
+            ]
+        return value
 
     @staticmethod
     def _evaluation_config(

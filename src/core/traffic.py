@@ -127,6 +127,7 @@ class PoissonEventGenerator:
                 event_type=event_type,
                 sender_device_id=sender.database_id,
                 target_device_id=None,
+                sender_device_key=sender.device_key,
                 payload=payload,
             )
 
@@ -145,6 +146,8 @@ class PoissonEventGenerator:
                 event_type=event_type,
                 sender_device_id=sender.database_id,
                 target_device_id=target.database_id,
+                sender_device_key=sender.device_key,
+                target_device_key=target.device_key,
                 amount=amount,
             )
 
@@ -160,6 +163,8 @@ class PoissonEventGenerator:
             event_type=event_type,
             sender_device_id=sender.database_id,
             target_device_id=target.database_id,
+            sender_device_key=sender.device_key,
+            target_device_key=target.device_key,
             payload={"feedback": feedback},
         )
 

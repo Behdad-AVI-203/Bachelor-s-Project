@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 import hashlib
+import json
 from math import sqrt
 import math
 from statistics import fmean, stdev
@@ -29,6 +31,48 @@ class ReplicationPlan:
     def identity(self) -> str:
         payload = f"{self.experiment_config_id}:{','.join(map(str, self.seeds))}"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    def resolve(self, engine: SimulationEngine) -> ResolvedReplicationPlan:
+        """Freeze one experiment definition for every planned seed."""
+        snapshot = engine.database.configurations.export_configuration(
+            "full",
+            self.experiment_config_id,
+        )
+        snapshot["execution"] = {
+            **dict(snapshot.get("execution") or {}),
+            "evaluation_configuration": incentive_evaluation_configuration(),
+        }
+        return ResolvedReplicationPlan(
+            experiment_config_id=self.experiment_config_id,
+            seeds=self.seeds,
+            configuration_snapshot=deepcopy(snapshot),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedReplicationPlan:
+    """Replication plan with one immutable effective experiment snapshot."""
+
+    experiment_config_id: int
+    seeds: tuple[int, ...]
+    configuration_snapshot: Mapping[str, Any]
+
+    @property
+    def identity(self) -> str:
+        payload = {
+            "experiment_config_id": self.experiment_config_id,
+            "seeds": self.seeds,
+            "configuration": _identity_snapshot(
+                self.configuration_snapshot
+            ),
+        }
+        canonical = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,10 +123,15 @@ class ReplicationRunner:
 
     def run(
         self,
-        plan: ReplicationPlan,
+        plan: ReplicationPlan | ResolvedReplicationPlan,
         *,
         metric_names: Sequence[str] | None = None,
     ) -> ReplicationSummary:
+        resolved = (
+            plan.resolve(self.engine)
+            if isinstance(plan, ReplicationPlan)
+            else plan
+        )
         names = tuple(metric_names or (
             "final_retention_rate",
             "opportunity_participation_rate",
@@ -92,14 +141,15 @@ class ReplicationRunner:
             "average_net_utility_per_device",
         ))
         results: list[ReplicationResult] = []
-        for replication_index, seed in enumerate(plan.seeds, start=1):
+        for replication_index, seed in enumerate(resolved.seeds, start=1):
             execution = self.engine.run_experiment(
-                plan.experiment_config_id,
+                resolved.experiment_config_id,
                 random_seed=int(seed),
+                configuration_snapshot=resolved.configuration_snapshot,
             )
             results.append(
                 ReplicationResult(
-                    experiment_config_id=plan.experiment_config_id,
+                    experiment_config_id=resolved.experiment_config_id,
                     replication_index=replication_index,
                     seed=int(seed),
                     simulation_id=execution.simulation_id,
@@ -141,8 +191,8 @@ class ReplicationRunner:
             else ("A" if score_a > score_b else "B")
         )
         return ReplicationSummary(
-            experiment_config_id=plan.experiment_config_id,
-            seeds=plan.seeds,
+            experiment_config_id=resolved.experiment_config_id,
+            seeds=resolved.seeds,
             replications=tuple(results),
             metrics=summaries,
             incentive_effectiveness_a=score_a,
@@ -150,8 +200,21 @@ class ReplicationRunner:
             aggregate_winner=winner,
             network_context={},
             evaluation_configuration=_evaluation_configuration(results),
-            replication_id=plan.identity,
+            replication_id=resolved.identity,
         )
+
+
+def _identity_snapshot(value: Any) -> Any:
+    """Remove volatile export metadata from replication identity material."""
+    if isinstance(value, Mapping):
+        return {
+            key: _identity_snapshot(item)
+            for key, item in value.items()
+            if key not in {"exported_at", "created_at", "updated_at"}
+        }
+    if isinstance(value, list):
+        return [_identity_snapshot(item) for item in value]
+    return value
 
 
 def _metrics(

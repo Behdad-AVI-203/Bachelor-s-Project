@@ -186,6 +186,7 @@ def test_replication_single_seed_matches_normal_run(database):
         ReplicationPlan(experiment_id, (77,)),
     )
     result = replicated.replications[0]
+    assert result.exogenous_fingerprint == normal.exogenous_fingerprint
     assert result.metrics_a["final_retention_rate"] == pytest.approx(
         normal.network_summaries["A"]["custom_summary_json"][
             "final_retention_rate"
@@ -195,6 +196,67 @@ def test_replication_single_seed_matches_normal_run(database):
         normal.network_summaries["B"]["custom_summary_json"][
             "opportunity_participation_rate"
         ]
+    )
+
+
+@pytest.mark.integration
+def test_replication_uses_one_frozen_experiment_definition(database):
+    environment_id = create_environment(database, device_count=2)
+    network_id = create_network(
+        database,
+        name="Frozen network",
+        reward_code=None,
+        include_incentive_parameters=False,
+    )
+    incentive_a = database.configurations.create_incentive_config(
+        name="Frozen A",
+        implementation_type="built_in",
+        built_in_key="default_reward",
+    )
+    incentive_b = database.configurations.create_incentive_config(
+        name="Frozen B",
+        implementation_type="built_in",
+        built_in_key="participation_first",
+    )
+    experiment_id = database.configurations.create_experiment_config(
+        name="Frozen experiment",
+        environment_id=environment_id,
+        network_config_id=network_id,
+        incentive_a_config_id=incentive_a,
+        incentive_b_config_id=incentive_b,
+        poisson_lambda=1,
+        duration_seconds=2,
+        sample_interval_ms=1_000,
+        default_random_seed=1,
+        traffic_mix={"iot_data": 1.0},
+    )
+    engine = SimulationEngine(database)
+    resolved = ReplicationPlan(experiment_id, (1, 2)).resolve(engine)
+    database.update_records(
+        "experiment_configs",
+        {"duration_seconds": 20},
+        {"id": experiment_id},
+    )
+    result = ReplicationRunner(engine).run(resolved)
+    stored_durations = {
+        database.get_record(
+            "simulation_runs",
+            {"id": replication.simulation_id},
+        )["duration_seconds"]
+        for replication in result.replications
+    }
+    assert stored_durations == {2.0}
+    expected_evaluation = resolved.configuration_snapshot["execution"][
+        "evaluation_configuration"
+    ]
+    assert all(
+        database.get_record(
+            "simulation_runs",
+            {"id": replication.simulation_id},
+        )["configuration_snapshot_json"]["execution"][
+            "evaluation_configuration"
+        ] == expected_evaluation
+        for replication in result.replications
     )
 
 
@@ -293,23 +355,13 @@ def test_zero_incentive_control_exercises_registry_and_metric_effects(database):
 @pytest.mark.integration
 def test_connectivity_sensitivity_changes_context_not_scoring_inputs(database):
     environment_id = create_environment(database, device_count=3)
-    first_network = create_network(
+    network_id = create_network(
         database,
-        name="Reliable network",
+        name="Connectivity-isolated network",
         reward_code=None,
         include_incentive_parameters=False,
         parameters={
             "link_availability_probability": 1.0,
-            "packet_delivery_success_probability": 1.0,
-        },
-    )
-    second_network = create_network(
-        database,
-        name="Unreliable network",
-        reward_code=None,
-        include_incentive_parameters=False,
-        parameters={
-            "link_availability_probability": 0.0,
             "packet_delivery_success_probability": 1.0,
         },
     )
@@ -323,26 +375,36 @@ def test_connectivity_sensitivity_changes_context_not_scoring_inputs(database):
         implementation_type="built_in",
         built_in_key="participation_first",
     )
-    def create_experiment(network_id, name):
-        return database.configurations.create_experiment_config(
-            name=name,
-            environment_id=environment_id,
-            network_config_id=network_id,
-            incentive_a_config_id=incentive_a,
-            incentive_b_config_id=incentive_b,
-            poisson_lambda=3,
-            duration_seconds=4,
-            sample_interval_ms=1_000,
-            default_random_seed=19,
-            traffic_mix={"iot_data": 1.0},
-        )
-    reliable = SimulationEngine(database).run_experiment(
-        create_experiment(first_network, "Reliable"),
-        random_seed=19,
+    experiment_id = database.configurations.create_experiment_config(
+        name="Connectivity isolation",
+        environment_id=environment_id,
+        network_config_id=network_id,
+        incentive_a_config_id=incentive_a,
+        incentive_b_config_id=incentive_b,
+        poisson_lambda=3,
+        duration_seconds=4,
+        sample_interval_ms=1_000,
+        default_random_seed=19,
+        traffic_mix={"iot_data": 1.0},
     )
-    unreliable = SimulationEngine(database).run_experiment(
-        create_experiment(second_network, "Unreliable"),
+    reliable_snapshot = database.configurations.export_configuration(
+        "full",
+        experiment_id,
+    )
+    unreliable_snapshot = deepcopy(reliable_snapshot)
+    unreliable_snapshot["network_bundle"]["network"][
+        "parameters_json"
+    ]["link_availability_probability"] = 0.0
+    engine = SimulationEngine(database)
+    reliable = engine.run_experiment(
+        experiment_id,
         random_seed=19,
+        configuration_snapshot=reliable_snapshot,
+    )
+    unreliable = engine.run_experiment(
+        experiment_id,
+        random_seed=19,
+        configuration_snapshot=unreliable_snapshot,
     )
     assert reliable.exogenous_fingerprint != unreliable.exogenous_fingerprint
     assert reliable.comparison["summary_json"]["network_context_score"] != (
@@ -351,6 +413,77 @@ def test_connectivity_sensitivity_changes_context_not_scoring_inputs(database):
     assert "network_performance" not in reliable.comparison[
         "summary_json"
     ]["incentive_effectiveness"].get("dimensions", {})
+    required_metrics = {
+        "final_retention_rate",
+        "useful_contribution_count",
+        "useful_contribution_rate",
+        "total_rewards",
+        "total_penalties",
+        "reward_expenditure",
+        "penalty_impact",
+        "reward_distribution_fairness",
+        "average_net_utility_per_device",
+    }
+    assert required_metrics <= set(
+        unreliable.network_summaries["A"]["custom_summary_json"]
+    )
+
+
+@pytest.mark.integration
+def test_exogenous_fingerprint_excludes_incentives_and_is_reproducible(
+    database,
+):
+    environment_id = create_environment(database, device_count=3)
+    network_id = create_network(
+        database,
+        name="Fingerprint network",
+        reward_code=None,
+        include_incentive_parameters=False,
+        parameters={"link_availability_probability": 0.5},
+    )
+    default_id = database.configurations.create_incentive_config(
+        name="Fingerprint default",
+        implementation_type="built_in",
+        built_in_key="default_reward",
+    )
+    participation_id = database.configurations.create_incentive_config(
+        name="Fingerprint participation",
+        implementation_type="built_in",
+        built_in_key="participation_first",
+    )
+    zero_id = database.configurations.create_incentive_config(
+        name="Fingerprint zero",
+        implementation_type="built_in",
+        built_in_key="zero_incentive",
+    )
+
+    def experiment(name, incentive_a, incentive_b):
+        return database.configurations.create_experiment_config(
+            name=name,
+            environment_id=environment_id,
+            network_config_id=network_id,
+            incentive_a_config_id=incentive_a,
+            incentive_b_config_id=incentive_b,
+            poisson_lambda=2,
+            duration_seconds=3,
+            sample_interval_ms=1_000,
+            default_random_seed=50,
+            traffic_mix={"iot_data": 1.0},
+        )
+
+    engine = SimulationEngine(database)
+    first_id = experiment("Fingerprint first", default_id, participation_id)
+    second_id = experiment("Fingerprint second", zero_id, default_id)
+    first = engine.run_experiment(first_id, random_seed=50)
+    repeated = engine.run_experiment(first_id, random_seed=50)
+    changed_incentives = engine.run_experiment(second_id, random_seed=50)
+    changed_seed = engine.run_experiment(first_id, random_seed=51)
+
+    assert first.exogenous_fingerprint == repeated.exogenous_fingerprint
+    assert first.exogenous_fingerprint == (
+        changed_incentives.exogenous_fingerprint
+    )
+    assert first.exogenous_fingerprint != changed_seed.exogenous_fingerprint
 
 
 @pytest.mark.integration

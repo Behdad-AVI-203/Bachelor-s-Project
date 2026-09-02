@@ -114,7 +114,7 @@ PRIMARY_METRIC_DEFINITIONS = {
         "average_net_utility_per_device", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "higher", "mean",
         "all enabled devices",
-        True, False, numerator="sum of cumulative device net utility",
+        False, False, numerator="sum of cumulative device net utility",
         zero_denominator="0.0 for an empty device population",
         inactive_devices="included",
         measurement_level="device",
@@ -161,7 +161,22 @@ PRIMARY_METRIC_DEFINITIONS = {
     "net_incentive_cost": MetricDefinition(
         "net_incentive_cost", "evaluation",
         MetricCategory.INCENTIVE_EFFECTIVENESS, "lower", "sum", "not a ratio",
-        False, False, numerator="total rewards minus total penalties",
+        False, False, numerator=(
+            "reward expenditure; compatibility alias retained for exports"
+        ),
+        measurement_level="device",
+    ),
+    "reward_expenditure": MetricDefinition(
+        "reward_expenditure", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "lower", "sum", "not a ratio",
+        False, False, numerator="sum of rewards paid to devices",
+        measurement_level="device",
+    ),
+    "penalty_impact": MetricDefinition(
+        "penalty_impact", "evaluation",
+        MetricCategory.INCENTIVE_EFFECTIVENESS, "neutral", "sum",
+        "not a ratio", False, False,
+        numerator="economic loss imposed on devices through penalties",
         measurement_level="device",
     ),
     "useful_contribution_count": MetricDefinition(
@@ -204,8 +219,8 @@ def metric_semantics() -> dict[str, str]:
             "assumption, not an objective physical quality measurement."
         ),
         "incentive_cost": (
-            "Rewards minus penalties; penalties are transfers to the device "
-            "ledger and are not automatically interpreted as system savings."
+            "Reward expenditure only. Penalties are modeled as economic loss "
+            "to devices; no system recipient or recovered revenue is modeled."
         ),
         "fairness": (
             "One minus the non-negative Gini coefficient over all enabled "
@@ -311,9 +326,16 @@ class IncentiveEvaluationAccumulator:
             state.cumulative_penalties for state in device_states
         )
         useful_count = self.useful_contribution_count
-        net_incentive_cost = total_rewards - total_penalties
+        reward_expenditure = total_rewards
+        penalty_impact = total_penalties
+        legacy_net_incentive_cost = total_rewards - total_penalties
         cost_per_useful = (
-            net_incentive_cost / useful_count
+            reward_expenditure / useful_count
+            if useful_count
+            else None
+        )
+        legacy_cost_per_useful = (
+            legacy_net_incentive_cost / useful_count
             if useful_count
             else None
         )
@@ -345,8 +367,14 @@ class IncentiveEvaluationAccumulator:
             "useful_contribution_per_active_device": useful_per_active,
             "total_rewards": total_rewards,
             "total_penalties": total_penalties,
-            "net_incentive_cost": net_incentive_cost,
+            "reward_expenditure": reward_expenditure,
+            "penalty_impact": penalty_impact,
+            "net_incentive_cost": reward_expenditure,
+            "legacy_net_incentive_cost": legacy_net_incentive_cost,
             "incentive_cost_per_useful_contribution": cost_per_useful,
+            "legacy_incentive_cost_per_useful_contribution": (
+                legacy_cost_per_useful
+            ),
             "reward_distribution_fairness": reward_fairness,
             "utility_distribution_fairness": utility_fairness,
             "average_net_utility_per_device": average_utility,

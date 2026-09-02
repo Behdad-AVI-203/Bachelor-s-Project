@@ -96,6 +96,8 @@ class ExternalOpportunity:
     amount: float = 0
     payload: dict[str, Any] = field(default_factory=dict)
     database_id: int | None = None
+    sender_device_key: str | None = None
+    target_device_key: str | None = None
 
     def to_database_record(self, simulation_id: int) -> dict[str, Any]:
         """Persist the opportunity using the existing event table."""
@@ -118,6 +120,8 @@ class ExternalOpportunity:
             "event_type": self.event_type.value,
             "sender_device_id": self.sender_device_id,
             "target_device_id": self.target_device_id,
+            "sender_device_key": self.sender_device_key,
+            "target_device_key": self.target_device_key,
             "amount": self.amount,
             "payload": dict(self.payload),
         }
@@ -133,6 +137,8 @@ class ExternalOpportunity:
             amount=self.amount,
             payload=dict(self.payload),
             database_id=self.database_id,
+            sender_device_key=self.sender_device_key,
+            target_device_key=self.target_device_key,
         )
 
     def copy(self) -> ExternalOpportunity:
@@ -146,6 +152,8 @@ class ExternalOpportunity:
             amount=self.amount,
             payload=dict(self.payload),
             database_id=self.database_id,
+            sender_device_key=self.sender_device_key,
+            target_device_key=self.target_device_key,
         )
 
 
@@ -161,6 +169,8 @@ class DeviceAction:
     amount: float = 0
     payload: dict[str, Any] = field(default_factory=dict)
     database_id: int | None = None
+    sender_device_key: str | None = None
+    target_device_key: str | None = None
 
     def to_database_record(self, simulation_id: int) -> dict[str, Any]:
         """Compatibility helper for callers that persist actions."""
@@ -183,6 +193,8 @@ class DeviceAction:
             "event_type": self.event_type.value,
             "sender_device_id": self.sender_device_id,
             "target_device_id": self.target_device_id,
+            "sender_device_key": self.sender_device_key,
+            "target_device_key": self.target_device_key,
             "amount": self.amount,
             "payload": dict(self.payload),
         }

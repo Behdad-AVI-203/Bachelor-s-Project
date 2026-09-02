@@ -963,6 +963,8 @@ class PoWNetworkModel(NetworkModel):
             amount=action.amount,
             payload=dict(action.payload),
             database_id=action.database_id,
+            sender_device_key=action.sender_device_key,
+            target_device_key=action.target_device_key,
         )
 
     def _mining_duration_ms(

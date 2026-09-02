@@ -122,8 +122,10 @@ class ProbabilisticConnectivityPolicy:
             self.random_seed,
             action.sequence_number,
             action.scheduled_at_ms,
-            action.sender_device_id,
-            action.target_device_id,
+            action.sender_device_key
+            or f"legacy-id:{action.sender_device_id}",
+            action.target_device_key
+            or f"legacy-id:{action.target_device_id}",
             action.event_type.value,
         )
         return repr(identity)

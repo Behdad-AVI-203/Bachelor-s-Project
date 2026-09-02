@@ -20,6 +20,7 @@ from src.core import (
     ExternalOpportunity,
     IncentiveContext,
     IncentiveError,
+    IncentiveEvaluationAccumulator,
     IncentiveMechanismRegistry,
     IncentiveOutcome,
     IoTEnvironmentRuntime,
@@ -525,10 +526,12 @@ def test_incentive_state_updates_and_metrics_are_persistable():
     ] == pytest.approx(0.5)
     assert summary["total_rewards"] == pytest.approx(2.0)
     assert summary["total_penalties"] == pytest.approx(0.5)
-    assert summary["net_incentive_cost"] == pytest.approx(1.5)
+    assert summary["reward_expenditure"] == pytest.approx(2.0)
+    assert summary["penalty_impact"] == pytest.approx(0.5)
+    assert summary["net_incentive_cost"] == pytest.approx(2.0)
     assert summary[
         "incentive_cost_per_useful_contribution"
-    ] == pytest.approx(1.5)
+    ] == pytest.approx(2.0)
     assert summary["reward_distribution_fairness"] == pytest.approx(0.5)
     assert summary["utility_distribution_fairness"] == pytest.approx(0.5)
 
@@ -773,14 +776,17 @@ def test_shared_opportunity_can_produce_action_or_no_action_per_arm():
     assert len(active_arm.transactions) == 1
     assert inactive_arm.transactions == []
     assert inactive_arm.non_participation_records[0].opportunity_sequence == 0
-    assert active_arm.metric_record(100)["custom_metrics_json"] == {
-        "pending_mining": True,
-        "virtual_time_ms": 100,
-        "opportunities_seen": 1,
-        "actions_created": 1,
-        "non_participation_count": 0,
-        "opportunity_participation_rate": 1.0,
-    }
+    active_metrics = active_arm.metric_record(100)["custom_metrics_json"]
+    assert active_metrics["pending_mining"] is True
+    assert active_metrics["virtual_time_ms"] == 100
+    assert active_metrics["opportunities_seen"] == 1
+    assert active_metrics["actions_created"] == 1
+    assert active_metrics["non_participation_count"] == 0
+    assert active_metrics["opportunity_participation_rate"] == 1.0
+    assert active_metrics["incentive_evaluation_count"] == 0
+    assert active_metrics["total_rewards"] == 0
+    assert active_metrics["total_penalties"] == 0
+    assert active_metrics["useful_contribution_count"] == 0
     assert inactive_arm.summary_record()["custom_summary_json"][
         "non_participation_count"
     ] == 1
@@ -891,6 +897,51 @@ def test_connectivity_policy_is_deterministic_for_same_seed_and_action():
 
     assert isinstance(first, ConnectivityOutcome)
     assert first == second
+
+
+def test_connectivity_randomness_uses_stable_device_keys():
+    first_action = _connectivity_action()
+    first_action.sender_device_key = "sensor-alpha"
+    second_action = _connectivity_action()
+    second_action.sender_device_id = 999
+    second_action.sender_device_key = "sensor-alpha"
+    policy = ProbabilisticConnectivityPolicy(
+        random_seed=42,
+        link_availability_probability=0.5,
+    )
+    assert policy.evaluate(first_action) == policy.evaluate(second_action)
+
+    changed_seed = ProbabilisticConnectivityPolicy(random_seed=43)
+    changed_key = _connectivity_action()
+    changed_key.sender_device_key = "sensor-beta"
+    assert policy.evaluate(first_action).metadata != (
+        changed_seed.evaluate(first_action).metadata
+    )
+    assert policy.evaluate(first_action).metadata != (
+        policy.evaluate(changed_key).metadata
+    )
+
+
+def test_behavior_randomness_uses_stable_device_keys():
+    first = ExternalOpportunity(
+        sequence_number=1,
+        scheduled_at_ms=100,
+        event_type=TransactionType.IOT_DATA,
+        sender_device_id=1,
+        target_device_id=None,
+        sender_device_key="sensor-alpha",
+    )
+    second = first.copy()
+    second.sender_device_id = 999
+    arm = _simulation_arm()
+    assert arm._decision_random_value(first) == arm._decision_random_value(
+        second
+    )
+    changed = first.copy()
+    changed.sender_device_key = "sensor-beta"
+    assert arm._decision_random_value(first) != arm._decision_random_value(
+        changed
+    )
 
 
 def test_connectivity_configuration_changes_pow_network_outcome():
@@ -1231,6 +1282,61 @@ def test_metric_definitions_are_explicit_and_scoped():
         assert definition.aggregation_window
         assert definition.measurement_level
     assert "useful_contribution" in metric_semantics()
+    assert not definitions[
+        "average_net_utility_per_device"
+    ].participates_in_scoring
+
+
+@pytest.mark.parametrize(
+    ("reward", "penalty", "expected_cost", "expected_penalty"),
+    (
+        (0.0, 0.0, 0.0, 0.0),
+        (2.0, 0.0, 2.0, 0.0),
+        (0.0, 3.0, 0.0, 3.0),
+        (2.0, 3.0, 2.0, 3.0),
+    ),
+)
+def test_penalties_are_device_impact_not_system_cost_savings(
+    reward,
+    penalty,
+    expected_cost,
+    expected_penalty,
+):
+    states = list(
+        PoWNetworkModel(
+            simulation_network_id=1,
+            environment=_runtime(device_count=1),
+            config=_blockchain_config(),
+            random_seed=1,
+        ).device_states.values()
+    )
+    states[0].cumulative_reward = reward
+    states[0].cumulative_penalties = penalty
+    summary = IncentiveEvaluationAccumulator().summarize(states)
+    assert summary["reward_expenditure"] == expected_cost
+    assert summary["net_incentive_cost"] == expected_cost
+    assert summary["penalty_impact"] == expected_penalty
+    assert summary["legacy_net_incentive_cost"] == pytest.approx(
+        reward - penalty
+    )
+
+
+def test_metrics_are_complete_with_zero_opportunities_and_inactive_devices():
+    arm = _simulation_arm()
+    for state in arm.device_states.values():
+        state.active = False
+        state.churn_reason = "Control condition."
+    summary = arm.summary_record()["custom_summary_json"]
+    assert summary["opportunities_seen"] == 0
+    assert summary["opportunity_participation_rate"] == 0
+    assert summary["final_retention_rate"] == 0
+    assert summary["churn_rate"] == 1
+    assert summary["useful_contribution_count"] == 0
+    assert summary["useful_contribution_rate"] == 0
+    assert summary["total_rewards"] == 0
+    assert summary["total_penalties"] == 0
+    assert summary["incentive_cost_per_useful_contribution"] is None
+    assert summary["reward_distribution_fairness"] == 0
 
 
 def test_paired_statistics_cover_single_zero_and_missing_values():

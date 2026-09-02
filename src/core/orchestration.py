@@ -169,14 +169,24 @@ class SimulationArmRuntime:
             "stream": "device_behavior",
             "sequence_number": opportunity.sequence_number,
             "scheduled_at_ms": opportunity.scheduled_at_ms,
-            "sender_device_id": opportunity.sender_device_id,
-            "target_device_id": opportunity.target_device_id,
+            "sender_device_key": (
+                opportunity.sender_device_key
+                or self._logical_device_key(opportunity.sender_device_id)
+            ),
+            "target_device_key": (
+                opportunity.target_device_key
+                or self._logical_device_key(opportunity.target_device_id)
+            ),
             "event_type": opportunity.event_type.value,
         }
         digest = hashlib.sha256(
             repr(sorted(material.items())).encode("utf-8")
         ).digest()
         return int.from_bytes(digest[:8], "big") / 2**64
+
+    def _logical_device_key(self, device_id: int | None) -> str | None:
+        state = self._get_state(device_id)
+        return state.profile.device_key if state is not None else None
 
     def process_event(self, event: SimulationEvent) -> Any:
         """Compatibility API returning a network-specific action record."""
@@ -246,10 +256,9 @@ class SimulationArmRuntime:
         )
         custom_metrics = dict(record.get("custom_metrics_json") or {})
         custom_metrics.update(self._participation_statistics())
-        if self.incentive_evaluations:
-            custom_metrics.update(
-                self.evaluation.summarize(self.device_states.values())
-            )
+        custom_metrics.update(
+            self.evaluation.summarize(self.device_states.values())
+        )
         record["custom_metrics_json"] = custom_metrics
         return record
 
@@ -257,10 +266,9 @@ class SimulationArmRuntime:
         record = self.network_model.summary_record()
         custom_summary = dict(record.get("custom_summary_json") or {})
         custom_summary.update(self._participation_statistics())
-        if self.incentive_evaluations:
-            custom_summary.update(
-                self.evaluation.summarize(self.device_states.values())
-            )
+        custom_summary.update(
+            self.evaluation.summarize(self.device_states.values())
+        )
         record["custom_summary_json"] = custom_summary
         return record
 
