@@ -38,6 +38,7 @@ def _load_editor_state(
 def _apply_template(prefix: str, template_name: str) -> None:
     template = NETWORK_TEMPLATES[template_name]
     for key in (
+        "model_type",
         "difficulty",
         "block_capacity",
         "block_interval_ms",
@@ -97,7 +98,7 @@ def _render_network_form(
         )
     with upload_columns[1]:
         logic_upload = st.file_uploader(
-            "Load custom blockchain logic (.py)",
+            "Load custom network logic (.py)",
             type=["py"],
             key=f"{prefix}_logic_upload",
         )
@@ -114,44 +115,56 @@ def _render_network_form(
             key=f"{prefix}_description",
         )
 
-        st.markdown("**Consensus and transaction settings**")
-        consensus_columns = st.columns(4)
-        with consensus_columns[0]:
+        st.markdown("**Network processing settings**")
+        model_columns = st.columns(2)
+        with model_columns[0]:
+            model_types = ["pow"]
+            model_type_labels = {"pow": "Proof of Work (PoW)"}
+            model_type = st.selectbox(
+                "Network model type",
+                options=model_types,
+                format_func=model_type_labels.get,
+                key=f"{prefix}_model_type",
+                help="Proof of Work is currently the only built-in model.",
+            )
+        is_pow = model_type == "pow"
+        with model_columns[1]:
             difficulty = st.number_input(
-                "PoW difficulty",
+                "PoW difficulty" if is_pow else "Processing difficulty",
                 min_value=0,
-                max_value=8,
+                max_value=8 if is_pow else 100,
                 step=1,
                 key=f"{prefix}_difficulty",
+                help="PoW leading-zero difficulty." if is_pow else None,
             )
-        with consensus_columns[1]:
+        capacity_columns = st.columns(2)
+        with capacity_columns[0]:
             block_capacity = st.number_input(
-                "Block capacity",
+                "Processing batch capacity",
                 min_value=1,
                 max_value=10_000,
                 step=1,
                 key=f"{prefix}_block_capacity",
             )
-        with consensus_columns[2]:
+        with capacity_columns[1]:
             block_interval_ms = st.number_input(
-                "Target block time (ms)",
+                "Target processing interval (ms)",
                 min_value=1,
                 step=100,
                 key=f"{prefix}_block_interval_ms",
             )
-        with consensus_columns[3]:
+        fee_columns = st.columns(2)
+        with fee_columns[0]:
             fee_rate = st.number_input(
-                "Transaction fee rate",
+                "Action fee rate",
                 min_value=0.0,
                 step=0.001,
                 format="%.4f",
                 key=f"{prefix}_fee_rate",
             )
-
-        parameter_columns = st.columns(1)
-        with parameter_columns[0]:
+        with fee_columns[1]:
             base_mining_time_ms = st.number_input(
-                "Base mining time (ms)",
+                "Base processing time (ms)",
                 min_value=0.001,
                 step=1.0,
                 format="%.3f",
@@ -175,17 +188,17 @@ def _render_network_form(
                 step=0.01,
                 key=f"{prefix}_packet_delivery",
             )
-        st.markdown("**Optional transaction plugin**")
+        st.markdown("**Optional network logic plugin**")
         logic_entrypoint = st.text_input(
-            "Blockchain logic entrypoint",
+            "Network logic entrypoint",
             key=f"{prefix}_logic_entrypoint",
         )
         logic_code = st.text_area(
-            "Custom blockchain logic Python code",
+            "Custom network logic Python code",
             height=220,
             key=f"{prefix}_logic_code",
             help=(
-                "Leave empty to use the built-in transaction handling logic."
+                "Leave empty to use the built-in action handling logic."
             ),
         )
         submitted = st.form_submit_button(
@@ -208,6 +221,7 @@ def _render_network_form(
                 get_database(),
                 name=name,
                 description=description,
+                model_type=str(model_type),
                 difficulty=int(difficulty),
                 block_capacity=int(block_capacity),
                 block_interval_ms=int(block_interval_ms),
@@ -300,15 +314,15 @@ if networks:
             "id": st.column_config.NumberColumn("ID", format="%d"),
             "name": "Network",
             "pow_difficulty": st.column_config.NumberColumn(
-                "Difficulty",
+                "Processing difficulty",
                 format="%d",
             ),
             "max_transactions_per_block": st.column_config.NumberColumn(
-                "Block capacity",
+                "Batch capacity",
                 format="%d",
             ),
             "target_block_time_ms": st.column_config.NumberColumn(
-                "Block time (ms)",
+                "Batch interval (ms)",
                 format="%d",
             ),
             "created_at": "Created",
@@ -332,13 +346,14 @@ mode = st.segmented_control(
 )
 
 if mode == "Create new":
-    template = NETWORK_TEMPLATES["Default PoW"]
+    template = NETWORK_TEMPLATES["Default processing"]
     _render_network_form(
         prefix="create_network",
         network_id=None,
         initial={
             "name": "",
             "description": "",
+            "model_type": template["model_type"],
             "difficulty": template["difficulty"],
             "block_capacity": template["block_capacity"],
             "block_interval_ms": template["block_interval_ms"],
@@ -375,6 +390,7 @@ elif networks:
         initial={
             "name": editor_data["name"],
             "description": editor_data.get("description") or "",
+            "model_type": editor_data.get("consensus_type", "pow"),
             "difficulty": editor_data["pow_difficulty"],
             "block_capacity": editor_data[
                 "max_transactions_per_block"

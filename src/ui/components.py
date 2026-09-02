@@ -28,7 +28,7 @@ def render_app_sidebar(database: DatabaseService) -> None:
     with st.sidebar:
         st.subheader(":material/hub: Research simulator")
         st.caption(
-            "Compare blockchain incentive mechanisms under identical "
+            "Compare incentive mechanisms under identical "
             "IoT traffic."
         )
         st.badge(

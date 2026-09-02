@@ -46,9 +46,10 @@ DEFAULT_REWARD_CODE = """def calculate_reward(context):
 """
 
 NETWORK_TEMPLATES = {
-    "Default PoW": {
+    "Default processing": {
+        "model_type": "pow",
         "description": (
-            "Balanced proof-of-work settings with precision and feedback "
+            "Balanced proof-of-work settings with precision- and feedback-"
             "based rewards."
         ),
         "difficulty": 2,
@@ -61,9 +62,10 @@ NETWORK_TEMPLATES = {
         "reward_code": DEFAULT_REWARD_CODE,
         "logic_code": "",
     },
-    "Low difficulty": {
+    "High throughput": {
+        "model_type": "pow",
         "description": (
-            "Fast block production for throughput-oriented experiments."
+            "Fast processing for throughput-oriented experiments."
         ),
         "difficulty": 1,
         "block_capacity": 40,
@@ -76,6 +78,7 @@ NETWORK_TEMPLATES = {
         "logic_code": "",
     },
     "Feedback weighted": {
+        "model_type": "pow",
         "description": (
             "Rewards place stronger emphasis on confirmed feedback scores."
         ),
@@ -1358,6 +1361,7 @@ def save_network(
     *,
     name: str,
     description: str | None,
+    model_type: str = "pow",
     difficulty: int,
     block_capacity: int,
     block_interval_ms: int,
@@ -1377,6 +1381,7 @@ def save_network(
     clean_name = name.strip()
     if not clean_name:
         raise ValueError("Network name is required.")
+    normalized_model_type = str(model_type).strip().lower() or "pow"
     if legacy_reward_compatibility:
         reward_function = load_plugin_function(
             reward_code,
@@ -1397,7 +1402,7 @@ def save_network(
         load_plugin_function(
             logic_code,
             logic_entrypoint,
-            plugin_name=f"{clean_name} blockchain logic",
+            plugin_name=f"{clean_name} network logic",
         )
 
     current = (
@@ -1448,7 +1453,7 @@ def save_network(
         values = {
             "name": clean_name,
             "description": description.strip() if description else None,
-            "consensus_type": "pow",
+            "consensus_type": normalized_model_type,
             "pow_difficulty": int(difficulty),
             "max_transactions_per_block": int(block_capacity),
             "target_block_time_ms": (
