@@ -282,7 +282,7 @@ def confirm_delete(network_id: int, network_name: str) -> None:
 database = get_database()
 page_header(
     "Network Setup",
-    "Configure consensus, validation, fees, connectivity, and network plugins.",
+    "Configure network processing, validation, fees, connectivity, and network plugins.",
     icon="account_tree",
 )
 
