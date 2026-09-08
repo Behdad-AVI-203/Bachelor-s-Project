@@ -331,7 +331,7 @@ if networks:
 else:
     empty_state(
         "No saved networks",
-        "Create at least two networks for comparative simulation.",
+        "Create at least one network for incentive experiments.",
         icon="account_tree",
     )
 

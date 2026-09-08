@@ -101,7 +101,7 @@ def _summary_cards(result: Any) -> None:
             values[2].metric(
                 "Throughput",
                 f"{format_decimal(arm_summary['average_throughput_tps'], 2)} "
-                "tx/s",
+                "actions/s",
             )
 
 

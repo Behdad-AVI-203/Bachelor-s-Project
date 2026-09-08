@@ -206,30 +206,51 @@ def _experiment_name(results: dict[str, Any]) -> str:
 def _incentive_effectiveness_frame(
     results: dict[str, Any],
     summary: dict[str, Any],
+    *,
+    legacy: bool = False,
 ) -> pd.DataFrame:
     """Build the primary evaluation table from persisted arm summaries."""
+    useful_label = (
+        "Useful contribution"
+        if legacy
+        else "Mechanism-credited contribution"
+    )
     metric_specs = [
-        ("Final retention rate", "final_retention_rate", "higher"),
+        ("Endpoint retention rate", "final_retention_rate", "higher"),
         ("Average active-device ratio", "average_active_device_ratio", "higher"),
         ("Opportunity participation rate", "opportunity_participation_rate", "higher"),
-        ("Churn rate", "churn_rate", "lower"),
-        ("Useful contribution count", "useful_contribution_count", "higher"),
-        ("Useful contribution rate", "useful_contribution_rate", "higher"),
+        ("Endpoint churn rate", "churn_rate", "lower"),
+        (f"{useful_label}s", "useful_contribution_count", "higher"),
+        (f"{useful_label} rate", "useful_contribution_rate", "higher"),
         (
-            "Useful contribution per active device",
+            f"{useful_label}s per active device",
             "useful_contribution_per_active_device",
             "higher",
         ),
         ("Total rewards", "total_rewards", "neutral"),
         ("Total penalties", "total_penalties", "lower"),
-        ("Net incentive cost", "net_incentive_cost", "lower"),
         (
-            "Incentive cost per useful contribution",
+            "Net incentive cost"
+            if legacy
+            else "Reward expenditure",
+            "net_incentive_cost",
+            "lower",
+        ),
+        (
+            "Incentive cost per useful contribution"
+            if legacy
+            else "Reward expenditure per mechanism-credited contribution",
             "incentive_cost_per_useful_contribution",
             "lower",
         ),
         ("Reward distribution fairness", "reward_distribution_fairness", "higher"),
-        ("Utility distribution fairness", "utility_distribution_fairness", "higher"),
+        (
+            "Utility distribution fairness"
+            if legacy
+            else "Profit distribution fairness",
+            "utility_distribution_fairness",
+            "higher",
+        ),
     ]
     arm_by_slot = {arm["network_slot"]: arm for arm in _arms(results)}
     rows = []
@@ -276,7 +297,7 @@ def _network_context_frame(
     if len(arms) != 2:
         return pd.DataFrame()
     metrics = [
-        ("Throughput (tx/s)", "average_throughput_tps"),
+        ("Throughput (actions/s)", "average_throughput_tps"),
         ("Average confirmation latency (ms)", "average_confirmation_ms"),
         ("Total blocks", "total_blocks"),
         ("Network fees", "total_fees"),
@@ -423,7 +444,7 @@ st.dataframe(
 )
 
 st.subheader("Incentive effectiveness" if not legacy else "Comparison metrics")
-effectiveness_frame = _incentive_effectiveness_frame(results, summary)
+effectiveness_frame = _incentive_effectiveness_frame(results, summary, legacy=legacy)
 if effectiveness_frame.empty:
     st.info("No incentive-effectiveness metrics were stored for this run.")
 else:
@@ -483,11 +504,11 @@ if chart_tabs[2].open:
             results,
             summary,
             "throughput_tps",
-            "Throughput (tx/s)",
+            "Throughput (actions/s)",
         )
         _line_chart(
             throughput_series,
-            value_column="Throughput (tx/s)",
+            value_column="Throughput (actions/s)",
             title="Network throughput context",
         )
 
