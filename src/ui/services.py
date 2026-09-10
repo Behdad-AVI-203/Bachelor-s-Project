@@ -124,6 +124,12 @@ INCENTIVE_TEMPLATES = {
             "fairness_weight": 0.25,
         },
     },
+    "Zero incentive": {
+        "description": "Baseline simulation generating 0.0 for all reward values.",
+        "implementation_type": "built_in",
+        "built_in_key": "zero_incentive",
+        "parameters": {},
+    },
 }
 
 DEFAULT_INCENTIVE_CODE = """def evaluate(context):
