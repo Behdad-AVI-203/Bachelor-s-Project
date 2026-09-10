@@ -466,6 +466,11 @@ def save_experiment(
         raise ValueError(
             "The selected environment, network, and incentives must exist."
         )
+    if network.get("reward_artifact_id") is not None:
+        raise ValueError(
+            "The selected shared network uses legacy reward compatibility. "
+            "Please select a network without an embedded reward mechanism."
+        )
 
     values = {
         "name": clean_name,
