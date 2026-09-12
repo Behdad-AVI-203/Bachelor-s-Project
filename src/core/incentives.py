@@ -216,6 +216,7 @@ def _fairness_aware_builtin(
         return {
             "reward_delta": _base_reward(typed, parameters) + adjustment,
             "contribution_delta": 1.0,
+            "reputation_delta": 0.01,
             "participation_signal": adjustment,
             "details": {"mechanism": "fairness_aware"},
         }
